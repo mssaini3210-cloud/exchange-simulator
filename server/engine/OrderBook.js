@@ -14,8 +14,11 @@ class OrderBook {
     this.nextSeq = 1;
   }
 
-  addOrder({ id, side, price, quantity }) {
-    validateOrder(id, side, price, quantity);
+  // type is 'limit' (the default) or 'market'. A market order has no
+  // price: it fills at the best prices available, and whatever is left
+  // is cancelled, never rested.
+  addOrder({ id, side, type = 'limit', price, quantity }) {
+    validateOrder(id, side, type, price, quantity);
     if (this.orderIndex.has(id)) {
       throw new Error('Order id already in the book: ' + id);
     }
@@ -23,7 +26,8 @@ class OrderBook {
     const order = {
       id: id,
       side: side,
-      price: price,
+      type: type,
+      price: type === 'market' ? null : price,
       quantity: quantity,
       remaining: quantity,
       seq: this.nextSeq,
@@ -32,10 +36,13 @@ class OrderBook {
 
     const trades = this.match(order);
     if (order.remaining === 0) {
-      return { trades: trades, restingOrder: null };
+      return { trades: trades, restingOrder: null, cancelledQuantity: 0 };
+    }
+    if (order.type === 'market') {
+      return { trades: trades, restingOrder: null, cancelledQuantity: order.remaining };
     }
     this.restOrder(order);
-    return { trades: trades, restingOrder: { ...order } };
+    return { trades: trades, restingOrder: { ...order }, cancelledQuantity: 0 };
   }
 
   cancelOrder(id) {
@@ -80,7 +87,14 @@ class OrderBook {
 
     while (incoming.remaining > 0 && opposite.prices.length > 0) {
       const price = bestPrice(opposite);
-      const crosses = isBuy ? price <= incoming.price : price >= incoming.price;
+      let crosses;
+      if (incoming.type === 'market') {
+        crosses = true; // a market order accepts any price
+      } else if (isBuy) {
+        crosses = price <= incoming.price;
+      } else {
+        crosses = price >= incoming.price;
+      }
       if (!crosses) {
         break;
       }
@@ -136,14 +150,21 @@ class OrderBook {
   }
 }
 
-function validateOrder(id, side, price, quantity) {
+function validateOrder(id, side, type, price, quantity) {
   if (id === undefined || id === null) {
     throw new Error('Order id is required');
   }
   if (side !== 'buy' && side !== 'sell') {
     throw new Error('Side must be "buy" or "sell"');
   }
-  if (!Number.isInteger(price) || price <= 0) {
+  if (type !== 'limit' && type !== 'market') {
+    throw new Error('Type must be "limit" or "market"');
+  }
+  if (type === 'market') {
+    if (price !== undefined && price !== null) {
+      throw new Error('A market order must not have a price');
+    }
+  } else if (!Number.isInteger(price) || price <= 0) {
     throw new Error('Price must be a positive integer in paise');
   }
   if (!Number.isInteger(quantity) || quantity <= 0) {

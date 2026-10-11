@@ -257,3 +257,106 @@ describe('OrderBook: matching', () => {
     expect(result.trades.map((t) => t.buyOrderId)).toEqual(['a', 'c']);
   });
 });
+
+describe('OrderBook: market orders', () => {
+  test('market order against an empty book trades nothing and is cancelled', () => {
+    const book = new OrderBook();
+    const result = book.addOrder({ id: 'm', side: 'buy', type: 'market', quantity: 10 });
+    expect(result.trades).toEqual([]);
+    expect(result.restingOrder).toBeNull();
+    expect(result.cancelledQuantity).toBe(10);
+    expect(book.getBestBid()).toBeNull();
+    expect(book.getBestAsk()).toBeNull();
+  });
+
+  test('market order against an empty opposite side does not rest on its own side', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, side: 'buy', price: 10000, quantity: 5 });
+    const result = book.addOrder({ id: 'm', side: 'buy', type: 'market', quantity: 10 });
+    expect(result.cancelledQuantity).toBe(10);
+    expect(book.getDepth(5).bids).toEqual([{ price: 10000, quantity: 5 }]);
+  });
+
+  test('market buy sweeps levels at each resting price, with no price limit', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, side: 'sell', price: 10000, quantity: 5 });
+    book.addOrder({ id: 2, side: 'sell', price: 10100, quantity: 5 });
+    book.addOrder({ id: 3, side: 'sell', price: 99900, quantity: 5 });
+    const result = book.addOrder({ id: 'm', side: 'buy', type: 'market', quantity: 12 });
+    expect(result.trades.map((t) => [t.price, t.quantity])).toEqual([
+      [10000, 5],
+      [10100, 5],
+      [99900, 2],
+    ]);
+    expect(result.cancelledQuantity).toBe(0);
+    expect(result.restingOrder).toBeNull();
+    expect(book.getDepth(5).asks).toEqual([{ price: 99900, quantity: 3 }]);
+  });
+
+  test('market order larger than the book: fills what it can, rest is cancelled', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, side: 'sell', price: 10000, quantity: 3 });
+    book.addOrder({ id: 2, side: 'sell', price: 10100, quantity: 4 });
+    const result = book.addOrder({ id: 'm', side: 'buy', type: 'market', quantity: 10 });
+    expect(result.trades.map((t) => t.quantity)).toEqual([3, 4]);
+    expect(result.restingOrder).toBeNull();
+    expect(result.cancelledQuantity).toBe(3);
+    expect(book.getBestAsk()).toBeNull();
+    expect(book.getBestBid()).toBeNull(); // the remainder never rested
+    expect(book.cancelOrder('m')).toBe(false);
+  });
+
+  test('market sell fills against the highest bids first', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, side: 'buy', price: 9900, quantity: 5 });
+    book.addOrder({ id: 2, side: 'buy', price: 10000, quantity: 5 });
+    const result = book.addOrder({ id: 'm', side: 'sell', type: 'market', quantity: 7 });
+    expect(result.trades).toEqual([
+      { buyOrderId: 2, sellOrderId: 'm', price: 10000, quantity: 5 },
+      { buyOrderId: 1, sellOrderId: 'm', price: 9900, quantity: 2 },
+    ]);
+    expect(book.getDepth(5).bids).toEqual([{ price: 9900, quantity: 3 }]);
+  });
+
+  test('market order fills same-price orders in arrival order', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 'first', side: 'sell', price: 10000, quantity: 5 });
+    book.addOrder({ id: 'second', side: 'sell', price: 10000, quantity: 5 });
+    const result = book.addOrder({ id: 'm', side: 'buy', type: 'market', quantity: 6 });
+    expect(result.trades.map((t) => [t.sellOrderId, t.quantity])).toEqual([
+      ['first', 5],
+      ['second', 1],
+    ]);
+  });
+
+  test('a market order with a price is rejected', () => {
+    const book = new OrderBook();
+    expect(() =>
+      book.addOrder({ id: 'm', side: 'buy', type: 'market', price: 10000, quantity: 5 })
+    ).toThrow();
+  });
+
+  test('a market order still needs a valid quantity', () => {
+    const book = new OrderBook();
+    expect(() => book.addOrder({ id: 'm', side: 'buy', type: 'market', quantity: 0 })).toThrow();
+  });
+
+  test('an unknown order type is rejected', () => {
+    const book = new OrderBook();
+    expect(() =>
+      book.addOrder({ id: 1, side: 'buy', type: 'stop', price: 10000, quantity: 5 })
+    ).toThrow();
+  });
+
+  test('a limit order without a price is still rejected', () => {
+    const book = new OrderBook();
+    expect(() => book.addOrder({ id: 1, side: 'buy', type: 'limit', quantity: 5 })).toThrow();
+  });
+
+  test('limit orders report cancelledQuantity 0', () => {
+    const book = new OrderBook();
+    const result = book.addOrder({ id: 1, side: 'buy', price: 10000, quantity: 5 });
+    expect(result.cancelledQuantity).toBe(0);
+    expect(result.restingOrder.type).toBe('limit');
+  });
+});
