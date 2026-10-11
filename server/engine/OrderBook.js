@@ -17,14 +17,15 @@ class OrderBook {
   // type is 'limit' (the default) or 'market'. A market order has no
   // price: it fills at the best prices available, and whatever is left
   // is cancelled, never rested.
-  addOrder({ id, side, type = 'limit', price, quantity }) {
-    validateOrder(id, side, type, price, quantity);
+  addOrder({ id, userId, side, type = 'limit', price, quantity }) {
+    validateOrder(id, userId, side, type, price, quantity);
     if (this.orderIndex.has(id)) {
       throw new Error('Order id already in the book: ' + id);
     }
 
     const order = {
       id: id,
+      userId: userId,
       side: side,
       type: type,
       price: type === 'market' ? null : price,
@@ -111,6 +112,8 @@ class OrderBook {
         trades.push({
           buyOrderId: isBuy ? incoming.id : resting.id,
           sellOrderId: isBuy ? resting.id : incoming.id,
+          buyUserId: isBuy ? incoming.userId : resting.userId,
+          sellUserId: isBuy ? resting.userId : incoming.userId,
           price: price,
           quantity: quantity,
         });
@@ -150,9 +153,12 @@ class OrderBook {
   }
 }
 
-function validateOrder(id, side, type, price, quantity) {
+function validateOrder(id, userId, side, type, price, quantity) {
   if (id === undefined || id === null) {
     throw new Error('Order id is required');
+  }
+  if (userId === undefined || userId === null) {
+    throw new Error('User id is required');
   }
   if (side !== 'buy' && side !== 'sell') {
     throw new Error('Side must be "buy" or "sell"');
