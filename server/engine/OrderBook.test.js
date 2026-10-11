@@ -402,3 +402,106 @@ describe('OrderBook: user ids', () => {
     ]);
   });
 });
+
+describe('OrderBook: self-trade prevention', () => {
+  test('limit order against its own resting order: no trade, remainder cancelled', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'alice', side: 'sell', price: 10000, quantity: 5 });
+    const result = book.addOrder({ id: 2, userId: 'alice', side: 'buy', price: 10000, quantity: 5 });
+    expect(result.trades).toEqual([]);
+    expect(result.restingOrder).toBeNull();
+    expect(result.cancelledQuantity).toBe(5);
+    expect(book.getBestBid()).toBeNull(); // the incoming order did not rest
+    expect(book.getDepth(1).asks).toEqual([{ price: 10000, quantity: 5 }]); // resting order untouched
+  });
+
+  test('fills other users first, then stops at its own order in the same level', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'bob', side: 'sell', price: 10000, quantity: 3 });
+    book.addOrder({ id: 2, userId: 'alice', side: 'sell', price: 10000, quantity: 3 });
+    book.addOrder({ id: 3, userId: 'carol', side: 'sell', price: 10000, quantity: 3 });
+    const result = book.addOrder({ id: 4, userId: 'alice', side: 'buy', price: 10000, quantity: 8 });
+    expect(result.trades.map((t) => [t.sellUserId, t.quantity])).toEqual([['bob', 3]]);
+    expect(result.cancelledQuantity).toBe(5);
+    expect(result.restingOrder).toBeNull();
+    expect(book.getDepth(1).asks).toEqual([{ price: 10000, quantity: 6 }]);
+    // alice's and carol's sells are still waiting, in the same order
+    const next = book.addOrder({ id: 5, userId: 'dave', side: 'buy', price: 10000, quantity: 4 });
+    expect(next.trades.map((t) => [t.sellUserId, t.quantity])).toEqual([
+      ['alice', 3],
+      ['carol', 1],
+    ]);
+  });
+
+  test('sweeps a level, then stops at its own order at the next price', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'bob', side: 'sell', price: 10000, quantity: 5 });
+    book.addOrder({ id: 2, userId: 'alice', side: 'sell', price: 10100, quantity: 5 });
+    const result = book.addOrder({ id: 3, userId: 'alice', side: 'buy', price: 10100, quantity: 8 });
+    expect(result.trades.map((t) => [t.price, t.quantity])).toEqual([[10000, 5]]);
+    expect(result.cancelledQuantity).toBe(3);
+    expect(book.getBestAsk()).toBe(10100);
+    expect(book.getBestBid()).toBeNull();
+  });
+
+  test('incoming sell against its own resting buy is also prevented', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'alice', side: 'buy', price: 10000, quantity: 5 });
+    const result = book.addOrder({ id: 2, userId: 'alice', side: 'sell', price: 9900, quantity: 4 });
+    expect(result.trades).toEqual([]);
+    expect(result.cancelledQuantity).toBe(4);
+    expect(book.getBestAsk()).toBeNull();
+    expect(book.getBestBid()).toBe(10000);
+  });
+
+  test('market order stops at its own order', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'bob', side: 'sell', price: 10000, quantity: 2 });
+    book.addOrder({ id: 2, userId: 'alice', side: 'sell', price: 10100, quantity: 5 });
+    book.addOrder({ id: 3, userId: 'carol', side: 'sell', price: 10200, quantity: 5 });
+    const result = book.addOrder({ id: 4, userId: 'alice', side: 'buy', type: 'market', quantity: 10 });
+    expect(result.trades.map((t) => t.sellUserId)).toEqual(['bob']);
+    expect(result.cancelledQuantity).toBe(8);
+    expect(book.getDepth(5).asks).toEqual([
+      { price: 10100, quantity: 5 },
+      { price: 10200, quantity: 5 },
+    ]);
+  });
+
+  test('own order at a price that does not cross is ignored, and the order rests', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'bob', side: 'sell', price: 10000, quantity: 5 });
+    book.addOrder({ id: 2, userId: 'alice', side: 'sell', price: 10100, quantity: 5 });
+    const result = book.addOrder({ id: 3, userId: 'alice', side: 'buy', price: 10000, quantity: 8 });
+    expect(result.trades.map((t) => t.quantity)).toEqual([5]);
+    expect(result.cancelledQuantity).toBe(0);
+    expect(result.restingOrder).toMatchObject({ id: 3, remaining: 3 });
+    expect(book.getBestBid()).toBe(10000);
+    expect(book.getBestAsk()).toBe(10100);
+  });
+
+  test('filled before reaching its own order: nothing is cancelled', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'bob', side: 'sell', price: 10000, quantity: 5 });
+    book.addOrder({ id: 2, userId: 'alice', side: 'sell', price: 10000, quantity: 5 });
+    const result = book.addOrder({ id: 3, userId: 'alice', side: 'buy', price: 10000, quantity: 5 });
+    expect(result.trades.map((t) => t.sellUserId)).toEqual(['bob']);
+    expect(result.cancelledQuantity).toBe(0);
+    expect(result.restingOrder).toBeNull();
+  });
+
+  test('the resting order survives and can still be cancelled by its owner', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'alice', side: 'sell', price: 10000, quantity: 5 });
+    book.addOrder({ id: 2, userId: 'alice', side: 'buy', price: 10000, quantity: 5 });
+    expect(book.cancelOrder(1)).toBe(true);
+    expect(book.getBestAsk()).toBeNull();
+  });
+
+  test('a cancelled incoming order is not in the book', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'alice', side: 'sell', price: 10000, quantity: 5 });
+    book.addOrder({ id: 2, userId: 'alice', side: 'buy', price: 10000, quantity: 5 });
+    expect(book.cancelOrder(2)).toBe(false);
+  });
+});

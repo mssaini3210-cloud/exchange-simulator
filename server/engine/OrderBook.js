@@ -17,6 +17,10 @@ class OrderBook {
   // type is 'limit' (the default) or 'market'. A market order has no
   // price: it fills at the best prices available, and whatever is left
   // is cancelled, never rested.
+  //
+  // Self-trade prevention: if the incoming order reaches a resting order
+  // from the same user, matching stops and the rest of the incoming order
+  // is cancelled (for limit orders too). cancelledQuantity reports it.
   addOrder({ id, userId, side, type = 'limit', price, quantity }) {
     validateOrder(id, userId, side, type, price, quantity);
     if (this.orderIndex.has(id)) {
@@ -35,11 +39,11 @@ class OrderBook {
     };
     this.nextSeq += 1;
 
-    const trades = this.match(order);
+    const { trades, stoppedBySelfTrade } = this.match(order);
     if (order.remaining === 0) {
       return { trades: trades, restingOrder: null, cancelledQuantity: 0 };
     }
-    if (order.type === 'market') {
+    if (order.type === 'market' || stoppedBySelfTrade) {
       return { trades: trades, restingOrder: null, cancelledQuantity: order.remaining };
     }
     this.restOrder(order);
@@ -80,13 +84,15 @@ class OrderBook {
 
   // Fill an incoming order against the opposite side, best price first,
   // oldest order first within a price. Trades happen at the resting
-  // order's price. Changes incoming.remaining and returns the trades.
+  // order's price. Changes incoming.remaining and returns the trades,
+  // plus whether matching stopped because of a self-trade.
   match(incoming) {
     const isBuy = incoming.side === 'buy';
     const opposite = isBuy ? this.asks : this.bids;
     const trades = [];
+    let stoppedBySelfTrade = false;
 
-    while (incoming.remaining > 0 && opposite.prices.length > 0) {
+    while (incoming.remaining > 0 && opposite.prices.length > 0 && !stoppedBySelfTrade) {
       const price = bestPrice(opposite);
       let crosses;
       if (incoming.type === 'market') {
@@ -103,6 +109,10 @@ class OrderBook {
       const level = opposite.levels.get(price);
       while (incoming.remaining > 0 && !level.isEmpty()) {
         const resting = level.peek();
+        if (resting.userId === incoming.userId) {
+          stoppedBySelfTrade = true; // never trade a user with themselves
+          break;
+        }
         const quantity = Math.min(incoming.remaining, resting.remaining);
 
         resting.remaining -= quantity;
@@ -129,7 +139,7 @@ class OrderBook {
       }
     }
 
-    return trades;
+    return { trades: trades, stoppedBySelfTrade: stoppedBySelfTrade };
   }
 
   // Put an order into the book on its own side.
