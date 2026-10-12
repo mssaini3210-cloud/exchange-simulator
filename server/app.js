@@ -25,6 +25,15 @@ function createApp() {
     }
   }
 
+  // Sends a 404 and returns true if the symbol isn't traded here.
+  function rejectUnknownSymbol(res, symbol) {
+    if (engine.hasSymbol(symbol)) {
+      return false;
+    }
+    res.status(404).json({ error: 'Unknown symbol: ' + symbol });
+    return true;
+  }
+
   const app = express();
 
   app.use(express.json());
@@ -41,8 +50,7 @@ function createApp() {
       res.status(400).json({ error: 'Symbol is required' });
       return;
     }
-    if (!engine.hasSymbol(symbol)) {
-      res.status(404).json({ error: 'Unknown symbol: ' + symbol });
+    if (rejectUnknownSymbol(res, symbol)) {
       return;
     }
 
@@ -72,6 +80,24 @@ function createApp() {
       cancelledQuantity: result.cancelledQuantity,
       cancelReason: result.cancelReason,
     });
+  });
+
+  app.get('/book/:symbol', (req, res) => {
+    const symbol = req.params.symbol;
+    if (rejectUnknownSymbol(res, symbol)) {
+      return;
+    }
+    const depth = engine.getBook(symbol).getDepth(10);
+    res.json({ symbol: symbol, bids: depth.bids, asks: depth.asks });
+  });
+
+  app.get('/trades/:symbol', (req, res) => {
+    const symbol = req.params.symbol;
+    if (rejectUnknownSymbol(res, symbol)) {
+      return;
+    }
+    const newestFirst = tradesBySymbol.get(symbol).slice().reverse();
+    res.json({ symbol: symbol, trades: newestFirst });
   });
 
   // No route matched.

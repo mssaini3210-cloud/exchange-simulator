@@ -183,3 +183,98 @@ describe('unexpected errors', () => {
     expect(consoleError).toHaveBeenCalledWith(bug);
   });
 });
+
+describe('GET /book/:symbol', () => {
+  test('an empty book', async () => {
+    const res = await request(createApp()).get('/book/INFY').set('x-user-id', 'alice');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ symbol: 'INFY', bids: [], asks: [] });
+  });
+
+  test('shows resting orders by level, best price first, for that symbol only', async () => {
+    const app = createApp();
+    await postOrder(app, 'alice', { symbol: 'INFY', side: 'buy', price: 150000, quantity: 5 });
+    await postOrder(app, 'bob', { symbol: 'INFY', side: 'buy', price: 150000, quantity: 3 });
+    await postOrder(app, 'carol', { symbol: 'INFY', side: 'buy', price: 149900, quantity: 2 });
+    await postOrder(app, 'dave', { symbol: 'INFY', side: 'sell', price: 150100, quantity: 4 });
+    await postOrder(app, 'erin', { symbol: 'TCS', side: 'sell', price: 350000, quantity: 1 });
+
+    const res = await request(app).get('/book/INFY').set('x-user-id', 'alice');
+    expect(res.body).toEqual({
+      symbol: 'INFY',
+      bids: [
+        { price: 150000, quantity: 8 },
+        { price: 149900, quantity: 2 },
+      ],
+      asks: [{ price: 150100, quantity: 4 }],
+    });
+  });
+
+  test('shows at most 10 levels per side', async () => {
+    const app = createApp();
+    for (let i = 0; i < 12; i++) {
+      await postOrder(app, 'alice', { symbol: 'INFY', side: 'buy', price: 150000 - i * 100, quantity: 1 });
+    }
+    const res = await request(app).get('/book/INFY').set('x-user-id', 'alice');
+    expect(res.body.bids).toHaveLength(10);
+    expect(res.body.bids[0].price).toBe(150000);
+  });
+
+  test('an unknown symbol is a 404', async () => {
+    const res = await request(createApp()).get('/book/WIPRO').set('x-user-id', 'alice');
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Unknown symbol: WIPRO' });
+  });
+
+  test('a request without x-user-id is a 401', async () => {
+    const res = await request(createApp()).get('/book/INFY');
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('GET /trades/:symbol', () => {
+  test('no trades yet', async () => {
+    const res = await request(createApp()).get('/trades/TCS').set('x-user-id', 'alice');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ symbol: 'TCS', trades: [] });
+  });
+
+  test('lists trades newest first, for that symbol only', async () => {
+    const app = createApp();
+    await postOrder(app, 'alice', { symbol: 'TCS', side: 'sell', price: 350000, quantity: 1 });
+    await postOrder(app, 'alice', { symbol: 'TCS', side: 'sell', price: 350100, quantity: 1 });
+    await postOrder(app, 'bob', { symbol: 'TCS', side: 'buy', type: 'market', quantity: 2 });
+    await postOrder(app, 'carol', { symbol: 'INFY', side: 'sell', price: 150000, quantity: 1 });
+    await postOrder(app, 'dave', { symbol: 'INFY', side: 'buy', price: 150000, quantity: 1 });
+
+    const res = await request(app).get('/trades/TCS').set('x-user-id', 'alice');
+    expect(res.body.trades.map((t) => [t.symbol, t.price])).toEqual([
+      ['TCS', 350100],
+      ['TCS', 350000],
+    ]);
+    expect(res.body.trades[0]).toHaveProperty('timestamp');
+  });
+
+  test('keeps only the last 100 trades', async () => {
+    const app = createApp();
+    // 101 single-share trades, each at a different price so we can tell them apart.
+    for (let i = 1; i <= 101; i++) {
+      await postOrder(app, 'alice', { symbol: 'RELIANCE', side: 'sell', price: 100000 + i, quantity: 1 });
+      await postOrder(app, 'bob', { symbol: 'RELIANCE', side: 'buy', type: 'market', quantity: 1 });
+    }
+    const res = await request(app).get('/trades/RELIANCE').set('x-user-id', 'alice');
+    expect(res.body.trades).toHaveLength(100);
+    expect(res.body.trades[0].price).toBe(100101); // newest
+    expect(res.body.trades[99].price).toBe(100002); // the first trade (100001) was dropped
+  });
+
+  test('an unknown symbol is a 404', async () => {
+    const res = await request(createApp()).get('/trades/WIPRO').set('x-user-id', 'alice');
+    expect(res.status).toBe(404);
+  });
+
+  test('a request without x-user-id is a 401', async () => {
+    const res = await request(createApp()).get('/trades/TCS');
+    expect(res.status).toBe(401);
+  });
+});
