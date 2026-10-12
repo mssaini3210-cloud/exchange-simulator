@@ -82,6 +82,32 @@ function createApp() {
     });
   });
 
+  app.delete('/orders/:symbol/:id', (req, res) => {
+    const symbol = req.params.symbol;
+    if (rejectUnknownSymbol(res, symbol)) {
+      return;
+    }
+    if (!/^[0-9]+$/.test(req.params.id)) {
+      res.status(400).json({ error: 'Order id must be a positive integer' });
+      return;
+    }
+    const orderId = Number(req.params.id);
+
+    const order = engine.getOrder(symbol, orderId);
+    if (order === null) {
+      // Never existed, already filled, or already cancelled.
+      res.status(404).json({ error: 'Order not found' });
+      return;
+    }
+    if (order.userId !== req.userId) {
+      res.status(403).json({ error: 'You can only cancel your own orders' });
+      return;
+    }
+
+    engine.cancelOrder(symbol, orderId);
+    res.json({ orderId: orderId, symbol: symbol, cancelled: true });
+  });
+
   app.get('/book/:symbol', (req, res) => {
     const symbol = req.params.symbol;
     if (rejectUnknownSymbol(res, symbol)) {

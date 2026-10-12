@@ -278,3 +278,93 @@ describe('GET /trades/:symbol', () => {
     expect(res.status).toBe(401);
   });
 });
+
+function cancelOrder(app, userId, symbol, id) {
+  return request(app).delete('/orders/' + symbol + '/' + id).set('x-user-id', userId);
+}
+
+function getBook(app, symbol) {
+  return request(app).get('/book/' + symbol).set('x-user-id', 'anyone');
+}
+
+describe('DELETE /orders/:symbol/:id', () => {
+  test('a user can cancel their own resting order', async () => {
+    const app = createApp();
+    await postOrder(app, 'alice', { symbol: 'INFY', side: 'buy', price: 150000, quantity: 5 });
+    const res = await cancelOrder(app, 'alice', 'INFY', 1);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ orderId: 1, symbol: 'INFY', cancelled: true });
+    expect((await getBook(app, 'INFY')).body.bids).toEqual([]);
+  });
+
+  test("cancelling someone else's order is a 403 and the order stays", async () => {
+    const app = createApp();
+    await postOrder(app, 'alice', { symbol: 'INFY', side: 'buy', price: 150000, quantity: 5 });
+    const res = await cancelOrder(app, 'bob', 'INFY', 1);
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: 'You can only cancel your own orders' });
+    expect((await getBook(app, 'INFY')).body.bids).toEqual([{ price: 150000, quantity: 5 }]);
+  });
+
+  test('a partly filled order can be cancelled', async () => {
+    const app = createApp();
+    await postOrder(app, 'alice', { symbol: 'INFY', side: 'sell', price: 150000, quantity: 5 });
+    await postOrder(app, 'bob', { symbol: 'INFY', side: 'buy', price: 150000, quantity: 2 });
+    const res = await cancelOrder(app, 'alice', 'INFY', 1);
+    expect(res.status).toBe(200);
+    expect((await getBook(app, 'INFY')).body.asks).toEqual([]);
+  });
+
+  test('cancelling a filled order is a 404', async () => {
+    const app = createApp();
+    await postOrder(app, 'alice', { symbol: 'INFY', side: 'sell', price: 150000, quantity: 5 });
+    await postOrder(app, 'bob', { symbol: 'INFY', side: 'buy', price: 150000, quantity: 5 });
+    const res = await cancelOrder(app, 'alice', 'INFY', 1);
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Order not found' });
+  });
+
+  test('cancelling the same order twice is a 404 the second time', async () => {
+    const app = createApp();
+    await postOrder(app, 'alice', { symbol: 'INFY', side: 'buy', price: 150000, quantity: 5 });
+    await cancelOrder(app, 'alice', 'INFY', 1);
+    const res = await cancelOrder(app, 'alice', 'INFY', 1);
+    expect(res.status).toBe(404);
+  });
+
+  test('an order id that never existed is a 404', async () => {
+    const res = await cancelOrder(createApp(), 'alice', 'INFY', 42);
+    expect(res.status).toBe(404);
+  });
+
+  test('the right id with the wrong symbol is a 404', async () => {
+    const app = createApp();
+    await postOrder(app, 'alice', { symbol: 'INFY', side: 'buy', price: 150000, quantity: 5 });
+    const res = await cancelOrder(app, 'alice', 'TCS', 1);
+    expect(res.status).toBe(404);
+    expect((await getBook(app, 'INFY')).body.bids).toHaveLength(1);
+  });
+
+  test('an id that is not a positive integer is a 400', async () => {
+    const app = createApp();
+    for (const badId of ['abc', '1.5', '-1']) {
+      const res = await cancelOrder(app, 'alice', 'INFY', badId);
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: 'Order id must be a positive integer' });
+    }
+  });
+
+  test('an unknown symbol is a 404', async () => {
+    const res = await cancelOrder(createApp(), 'alice', 'WIPRO', 1);
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Unknown symbol: WIPRO' });
+  });
+
+  test('a request without x-user-id is a 401', async () => {
+    const app = createApp();
+    await postOrder(app, 'alice', { symbol: 'INFY', side: 'buy', price: 150000, quantity: 5 });
+    const res = await request(app).delete('/orders/INFY/1');
+    expect(res.status).toBe(401);
+    expect((await getBook(app, 'INFY')).body.bids).toHaveLength(1);
+  });
+});
