@@ -73,6 +73,63 @@ show the order book on screen).
   expensive to cheap, so the cheapest is last. A new cheapest ask goes at the
   end. Anything else slots into the middle.
 
+## Day 2
+
+### What I built
+
+**Market orders**: "buy (or sell) now, at whatever price is there". They have
+no price. They fill against the best prices until they're done or the book is
+empty. Anything left is cancelled, never left waiting.
+
+- Sellers waiting: 3 shares at ₹100, 4 shares at ₹101.
+- Market buy for 10 shares: takes 3 at ₹100, then 4 at ₹101.
+- 3 shares are left, so they're cancelled (`cancelledQuantity: 3`).
+- Market order on an empty book: no trades, all of it cancelled.
+
+**userId**: every order now says who placed it, and every trade says who
+bought and who sold (`buyUserId`, `sellUserId`).
+
+- Alice is waiting to sell 5 at ₹100. Bob buys 5 at ₹100.
+- Trade: 5 shares at ₹100, buyer = bob, seller = alice.
+
+**MatchingEngine**: holds one order book per stock and sends each order to
+the right one. A stock it doesn't know about is rejected.
+
+- Engine made with `['INFY', 'TCS']`.
+- A sell for INFY at ₹100 and a buy for TCS at ₹100 never trade. They're
+  different books.
+- An order for `'WIPRO'` throws "Unknown symbol: WIPRO".
+- Cancel needs the stock too, because order id 1 can exist in INFY and TCS.
+
+**Self-trade prevention**: a user can't trade with themselves. If an incoming
+order reaches a waiting order from the same user, matching stops and the rest
+of the incoming order is cancelled.
+
+- Bob is waiting to sell 3 at ₹100, then Alice sells 3 at ₹100 behind him.
+- Alice buys 8 at ₹100.
+- She gets 3 from Bob, then reaches her own order and stops.
+- 5 are cancelled (`cancelledQuantity: 5`). Her sell order is untouched.
+
+### Interview points
+
+**What stops a market order filling at a terrible price on a thin book?**
+A thin book has only a few orders. A big market order eats through all of
+them and can end up paying a crazy price. In my engine, a market buy can pay
+₹999 if that's the only seller left. Real exchanges protect against this:
+
+- **Price bands**: orders can't trade more than a set % away from a reference
+  price (for example, the last trade).
+- **Sweep limits**: a market order may only go a set distance from the best
+  price it started at. Anything beyond that is cancelled.
+
+**Self-trade: "cancel newest" vs "cancel oldest"?**
+- **Cancel newest** (what I built): the incoming order is cancelled and the
+  waiting order stays.
+- **Cancel oldest**: the waiting order is cancelled and the incoming order
+  keeps matching.
+- Some exchanges also offer "cancel both". Usually the user picks which rule
+  they want.
+
 ### Still to finish
 
 - Walkthrough parts 4, 5 and 6 with Claude Code.
