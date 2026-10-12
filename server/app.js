@@ -3,11 +3,28 @@ const MatchingEngine = require('./engine/MatchingEngine');
 const ValidationError = require('./engine/ValidationError');
 
 const SYMBOLS = ['INFY', 'TCS', 'RELIANCE'];
+const MAX_TRADES_PER_SYMBOL = 100;
 
 // Builds a new app with its own engine and in-memory state.
 // Tests call this once per test so they never share state.
 function createApp() {
   const engine = new MatchingEngine(SYMBOLS);
+  let nextOrderId = 1; // one counter for all symbols, so ids are unique everywhere
+  const tradesBySymbol = new Map(); // symbol -> last 100 trades, oldest first
+  for (const symbol of SYMBOLS) {
+    tradesBySymbol.set(symbol, []);
+  }
+
+  function recordTrades(symbol, trades) {
+    const list = tradesBySymbol.get(symbol);
+    for (const trade of trades) {
+      list.push(trade);
+      if (list.length > MAX_TRADES_PER_SYMBOL) {
+        list.shift();
+      }
+    }
+  }
+
   const app = express();
 
   app.use(express.json());
@@ -15,6 +32,46 @@ function createApp() {
 
   app.get('/symbols', (req, res) => {
     res.json({ symbols: engine.getSymbols() });
+  });
+
+  app.post('/orders', (req, res) => {
+    const body = req.body || {};
+    const symbol = body.symbol;
+    if (symbol === undefined) {
+      res.status(400).json({ error: 'Symbol is required' });
+      return;
+    }
+    if (!engine.hasSymbol(symbol)) {
+      res.status(404).json({ error: 'Unknown symbol: ' + symbol });
+      return;
+    }
+
+    const orderId = nextOrderId;
+    nextOrderId += 1;
+
+    // Pick the fields one by one: id and userId never come from the body.
+    const result = engine.addOrder({
+      symbol: symbol,
+      id: orderId,
+      userId: req.userId,
+      side: body.side,
+      type: body.type,
+      price: body.price,
+      quantity: body.quantity,
+    });
+
+    const timestamp = new Date().toISOString();
+    const trades = result.trades.map((trade) => ({ symbol: symbol, ...trade, timestamp: timestamp }));
+    recordTrades(symbol, trades);
+
+    res.status(201).json({
+      orderId: orderId,
+      symbol: symbol,
+      trades: trades,
+      restingOrder: result.restingOrder,
+      cancelledQuantity: result.cancelledQuantity,
+      cancelReason: result.cancelReason,
+    });
   });
 
   // No route matched.
