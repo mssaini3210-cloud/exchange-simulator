@@ -1,3 +1,4 @@
+const ValidationError = require('./ValidationError');
 const OrderBook = require('./OrderBook');
 
 // Holds one OrderBook per stock symbol and sends each request to the
@@ -5,15 +6,15 @@ const OrderBook = require('./OrderBook');
 class MatchingEngine {
   constructor(symbols) {
     if (!Array.isArray(symbols) || symbols.length === 0) {
-      throw new Error('Symbols must be a non-empty array');
+      throw new ValidationError('Symbols must be a non-empty array');
     }
     this.books = new Map(); // symbol -> OrderBook
     for (const symbol of symbols) {
       if (typeof symbol !== 'string' || symbol === '') {
-        throw new Error('Each symbol must be a non-empty string');
+        throw new ValidationError('Each symbol must be a non-empty string');
       }
       if (this.books.has(symbol)) {
-        throw new Error('Duplicate symbol: ' + symbol);
+        throw new ValidationError('Duplicate symbol: ' + symbol);
       }
       this.books.set(symbol, new OrderBook());
     }
@@ -34,7 +35,7 @@ class MatchingEngine {
   getBook(symbol) {
     const book = this.books.get(symbol);
     if (book === undefined) {
-      throw new Error('Unknown symbol: ' + symbol);
+      throw new ValidationError('Unknown symbol: ' + symbol);
     }
     return book;
   }

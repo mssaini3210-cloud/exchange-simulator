@@ -1,37 +1,38 @@
+const ValidationError = require('./ValidationError');
 const OrderBook = require('./OrderBook');
 
 describe('OrderBook: validation', () => {
   test('rejects float prices', () => {
     const book = new OrderBook();
-    expect(() => book.addOrder({ id: 1, userId: 'buyer', side: 'buy', price: 100.5, quantity: 10 })).toThrow();
+    expect(() => book.addOrder({ id: 1, userId: 'buyer', side: 'buy', price: 100.5, quantity: 10 })).toThrow(ValidationError);
   });
 
   test('rejects zero or negative prices', () => {
     const book = new OrderBook();
-    expect(() => book.addOrder({ id: 1, userId: 'buyer', side: 'buy', price: 0, quantity: 10 })).toThrow();
-    expect(() => book.addOrder({ id: 2, userId: 'buyer', side: 'buy', price: -100, quantity: 10 })).toThrow();
+    expect(() => book.addOrder({ id: 1, userId: 'buyer', side: 'buy', price: 0, quantity: 10 })).toThrow(ValidationError);
+    expect(() => book.addOrder({ id: 2, userId: 'buyer', side: 'buy', price: -100, quantity: 10 })).toThrow(ValidationError);
   });
 
   test('rejects bad quantities', () => {
     const book = new OrderBook();
-    expect(() => book.addOrder({ id: 1, userId: 'buyer', side: 'buy', price: 10000, quantity: 0 })).toThrow();
-    expect(() => book.addOrder({ id: 2, userId: 'buyer', side: 'buy', price: 10000, quantity: 1.5 })).toThrow();
+    expect(() => book.addOrder({ id: 1, userId: 'buyer', side: 'buy', price: 10000, quantity: 0 })).toThrow(ValidationError);
+    expect(() => book.addOrder({ id: 2, userId: 'buyer', side: 'buy', price: 10000, quantity: 1.5 })).toThrow(ValidationError);
   });
 
   test('rejects an unknown side', () => {
     const book = new OrderBook();
-    expect(() => book.addOrder({ id: 1, userId: 'buyer', side: 'hold', price: 10000, quantity: 10 })).toThrow();
+    expect(() => book.addOrder({ id: 1, userId: 'buyer', side: 'hold', price: 10000, quantity: 10 })).toThrow(ValidationError);
   });
 
   test('rejects a missing id', () => {
     const book = new OrderBook();
-    expect(() => book.addOrder({ userId: 'buyer', side: 'buy', price: 10000, quantity: 10 })).toThrow();
+    expect(() => book.addOrder({ userId: 'buyer', side: 'buy', price: 10000, quantity: 10 })).toThrow(ValidationError);
   });
 
   test('rejects a duplicate id that is still resting', () => {
     const book = new OrderBook();
     book.addOrder({ id: 1, userId: 'buyer', side: 'buy', price: 10000, quantity: 10 });
-    expect(() => book.addOrder({ id: 1, userId: 'buyer', side: 'buy', price: 10100, quantity: 5 })).toThrow();
+    expect(() => book.addOrder({ id: 1, userId: 'buyer', side: 'buy', price: 10100, quantity: 5 })).toThrow(ValidationError);
   });
 });
 
@@ -333,24 +334,24 @@ describe('OrderBook: market orders', () => {
     const book = new OrderBook();
     expect(() =>
       book.addOrder({ id: 'm', userId: 'buyer', side: 'buy', type: 'market', price: 10000, quantity: 5 })
-    ).toThrow();
+    ).toThrow(ValidationError);
   });
 
   test('a market order still needs a valid quantity', () => {
     const book = new OrderBook();
-    expect(() => book.addOrder({ id: 'm', userId: 'buyer', side: 'buy', type: 'market', quantity: 0 })).toThrow();
+    expect(() => book.addOrder({ id: 'm', userId: 'buyer', side: 'buy', type: 'market', quantity: 0 })).toThrow(ValidationError);
   });
 
   test('an unknown order type is rejected', () => {
     const book = new OrderBook();
     expect(() =>
       book.addOrder({ id: 1, userId: 'buyer', side: 'buy', type: 'stop', price: 10000, quantity: 5 })
-    ).toThrow();
+    ).toThrow(ValidationError);
   });
 
   test('a limit order without a price is still rejected', () => {
     const book = new OrderBook();
-    expect(() => book.addOrder({ id: 1, userId: 'buyer', side: 'buy', type: 'limit', quantity: 5 })).toThrow();
+    expect(() => book.addOrder({ id: 1, userId: 'buyer', side: 'buy', type: 'limit', quantity: 5 })).toThrow(ValidationError);
   });
 
   test('limit orders report cancelledQuantity 0', () => {

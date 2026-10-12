@@ -1,3 +1,4 @@
+const ValidationError = require('./ValidationError');
 const PriceLevel = require('./PriceLevel');
 
 // The order book for one stock. Prices are integers in paise.
@@ -24,7 +25,7 @@ class OrderBook {
   addOrder({ id, userId, side, type = 'limit', price, quantity }) {
     validateOrder(id, userId, side, type, price, quantity);
     if (this.orderIndex.has(id)) {
-      throw new Error('Order id already in the book: ' + id);
+      throw new ValidationError('Order id already in the book: ' + id);
     }
 
     const order = {
@@ -165,26 +166,26 @@ class OrderBook {
 
 function validateOrder(id, userId, side, type, price, quantity) {
   if (id === undefined || id === null) {
-    throw new Error('Order id is required');
+    throw new ValidationError('Order id is required');
   }
   if (userId === undefined || userId === null) {
-    throw new Error('User id is required');
+    throw new ValidationError('User id is required');
   }
   if (side !== 'buy' && side !== 'sell') {
-    throw new Error('Side must be "buy" or "sell"');
+    throw new ValidationError('Side must be "buy" or "sell"');
   }
   if (type !== 'limit' && type !== 'market') {
-    throw new Error('Type must be "limit" or "market"');
+    throw new ValidationError('Type must be "limit" or "market"');
   }
   if (type === 'market') {
     if (price !== undefined && price !== null) {
-      throw new Error('A market order must not have a price');
+      throw new ValidationError('A market order must not have a price');
     }
   } else if (!Number.isInteger(price) || price <= 0) {
-    throw new Error('Price must be a positive integer in paise');
+    throw new ValidationError('Price must be a positive integer in paise');
   }
   if (!Number.isInteger(quantity) || quantity <= 0) {
-    throw new Error('Quantity must be a positive integer');
+    throw new ValidationError('Quantity must be a positive integer');
   }
 }
 

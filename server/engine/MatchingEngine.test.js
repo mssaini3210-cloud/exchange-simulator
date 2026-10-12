@@ -1,3 +1,4 @@
+const ValidationError = require('./ValidationError');
 const MatchingEngine = require('./MatchingEngine');
 const OrderBook = require('./OrderBook');
 
@@ -10,13 +11,13 @@ describe('MatchingEngine: setup', () => {
   });
 
   test('rejects a missing or empty symbol list', () => {
-    expect(() => new MatchingEngine()).toThrow();
-    expect(() => new MatchingEngine([])).toThrow();
+    expect(() => new MatchingEngine()).toThrow(ValidationError);
+    expect(() => new MatchingEngine([])).toThrow(ValidationError);
   });
 
   test('rejects empty or non-string symbols', () => {
-    expect(() => new MatchingEngine(['INFY', ''])).toThrow();
-    expect(() => new MatchingEngine(['INFY', 42])).toThrow();
+    expect(() => new MatchingEngine(['INFY', ''])).toThrow(ValidationError);
+    expect(() => new MatchingEngine(['INFY', 42])).toThrow(ValidationError);
   });
 
   test('rejects duplicate symbols', () => {
@@ -113,5 +114,15 @@ describe('MatchingEngine: routing', () => {
     expect(() =>
       engine.addOrder({ symbol: 'INFY', id: 1, userId: 'alice', side: 'buy', price: 100.5, quantity: 5 })
     ).toThrow('Price must be a positive integer in paise');
+  });
+});
+
+describe('MatchingEngine: error types', () => {
+  test('unknown symbols and bad orders throw ValidationError', () => {
+    const engine = new MatchingEngine(['INFY']);
+    expect(() => engine.getBook('WIPRO')).toThrow(ValidationError);
+    expect(() =>
+      engine.addOrder({ symbol: 'INFY', id: 1, userId: 'alice', side: 'buy', price: 100.5, quantity: 5 })
+    ).toThrow(ValidationError);
   });
 });
