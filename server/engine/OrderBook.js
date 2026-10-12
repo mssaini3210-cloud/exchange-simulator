@@ -83,6 +83,16 @@ class OrderBook {
     return true;
   }
 
+  // A copy of a resting order, or null if it isn't in the book
+  // (never existed, already filled, or cancelled).
+  getOrder(id) {
+    const node = this.orderIndex.get(id);
+    if (node === undefined) {
+      return null;
+    }
+    return { ...node.order };
+  }
+
   getBestBid() {
     return bestPrice(this.bids);
   }

@@ -126,3 +126,29 @@ describe('MatchingEngine: error types', () => {
     ).toThrow(ValidationError);
   });
 });
+
+describe('MatchingEngine: lookups', () => {
+  test('getSymbols lists the symbols in the order given', () => {
+    const engine = new MatchingEngine(['INFY', 'TCS', 'RELIANCE']);
+    expect(engine.getSymbols()).toEqual(['INFY', 'TCS', 'RELIANCE']);
+  });
+
+  test('hasSymbol is true only for known symbols', () => {
+    const engine = new MatchingEngine(['INFY']);
+    expect(engine.hasSymbol('INFY')).toBe(true);
+    expect(engine.hasSymbol('WIPRO')).toBe(false);
+    expect(engine.hasSymbol(undefined)).toBe(false);
+  });
+
+  test('getOrder looks in the right book', () => {
+    const engine = new MatchingEngine(['INFY', 'TCS']);
+    engine.addOrder({ symbol: 'INFY', id: 1, userId: 'alice', side: 'buy', price: 10000, quantity: 5 });
+    expect(engine.getOrder('INFY', 1)).toMatchObject({ id: 1, userId: 'alice' });
+    expect(engine.getOrder('TCS', 1)).toBeNull();
+  });
+
+  test('getOrder rejects an unknown symbol', () => {
+    const engine = new MatchingEngine(['INFY']);
+    expect(() => engine.getOrder('WIPRO', 1)).toThrow(ValidationError);
+  });
+});

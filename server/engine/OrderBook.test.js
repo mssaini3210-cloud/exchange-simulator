@@ -552,3 +552,33 @@ describe('OrderBook: cancelReason', () => {
     expect(result.cancelReason).toBe('self-trade');
   });
 });
+
+describe('OrderBook: getOrder', () => {
+  test('returns a copy of a resting order', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'alice', side: 'buy', price: 10000, quantity: 5 });
+    const order = book.getOrder(1);
+    expect(order).toMatchObject({ id: 1, userId: 'alice', side: 'buy', price: 10000, remaining: 5 });
+    order.remaining = 999; // changing the copy must not change the book
+    expect(book.getOrder(1).remaining).toBe(5);
+    expect(book.getDepth(1).bids).toEqual([{ price: 10000, quantity: 5 }]);
+  });
+
+  test('shows the remaining quantity after a partial fill', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'alice', side: 'sell', price: 10000, quantity: 5 });
+    book.addOrder({ id: 2, userId: 'bob', side: 'buy', price: 10000, quantity: 2 });
+    expect(book.getOrder(1).remaining).toBe(3);
+  });
+
+  test('returns null for unknown, filled and cancelled orders', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'alice', side: 'sell', price: 10000, quantity: 5 });
+    book.addOrder({ id: 2, userId: 'bob', side: 'buy', price: 10000, quantity: 5 });
+    book.addOrder({ id: 3, userId: 'carol', side: 'buy', price: 9900, quantity: 5 });
+    book.cancelOrder(3);
+    expect(book.getOrder(42)).toBeNull();
+    expect(book.getOrder(1)).toBeNull(); // filled
+    expect(book.getOrder(3)).toBeNull(); // cancelled
+  });
+});

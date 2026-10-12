@@ -32,6 +32,19 @@ class MatchingEngine {
     return book.cancelOrder(id);
   }
 
+  getOrder(symbol, id) {
+    const book = this.getBook(symbol);
+    return book.getOrder(id);
+  }
+
+  getSymbols() {
+    return Array.from(this.books.keys());
+  }
+
+  hasSymbol(symbol) {
+    return this.books.has(symbol);
+  }
+
   getBook(symbol) {
     const book = this.books.get(symbol);
     if (book === undefined) {
