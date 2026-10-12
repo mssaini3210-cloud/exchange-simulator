@@ -22,6 +22,9 @@ class OrderBook {
   // Self-trade prevention: if the incoming order reaches a resting order
   // from the same user, matching stops and the rest of the incoming order
   // is cancelled (for limit orders too). cancelledQuantity reports it.
+  //
+  // cancelReason says why anything was cancelled: null (nothing was),
+  // 'self-trade', or 'no liquidity' (a market order ran out of orders).
   addOrder({ id, userId, side, type = 'limit', price, quantity }) {
     validateOrder(id, userId, side, type, price, quantity);
     if (this.orderIndex.has(id)) {
@@ -42,13 +45,26 @@ class OrderBook {
 
     const { trades, stoppedBySelfTrade } = this.match(order);
     if (order.remaining === 0) {
-      return { trades: trades, restingOrder: null, cancelledQuantity: 0 };
+      return { trades: trades, restingOrder: null, cancelledQuantity: 0, cancelReason: null };
     }
-    if (order.type === 'market' || stoppedBySelfTrade) {
-      return { trades: trades, restingOrder: null, cancelledQuantity: order.remaining };
+    if (stoppedBySelfTrade) {
+      return {
+        trades: trades,
+        restingOrder: null,
+        cancelledQuantity: order.remaining,
+        cancelReason: 'self-trade',
+      };
+    }
+    if (order.type === 'market') {
+      return {
+        trades: trades,
+        restingOrder: null,
+        cancelledQuantity: order.remaining,
+        cancelReason: 'no liquidity',
+      };
     }
     this.restOrder(order);
-    return { trades: trades, restingOrder: { ...order }, cancelledQuantity: 0 };
+    return { trades: trades, restingOrder: { ...order }, cancelledQuantity: 0, cancelReason: null };
   }
 
   cancelOrder(id) {

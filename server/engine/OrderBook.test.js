@@ -506,3 +506,49 @@ describe('OrderBook: self-trade prevention', () => {
     expect(book.cancelOrder(2)).toBe(false);
   });
 });
+
+describe('OrderBook: cancelReason', () => {
+  test('null when a limit order rests', () => {
+    const book = new OrderBook();
+    const result = book.addOrder({ id: 1, userId: 'alice', side: 'buy', price: 10000, quantity: 5 });
+    expect(result.cancelReason).toBeNull();
+  });
+
+  test('null when an order fills completely', () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'alice', side: 'sell', price: 10000, quantity: 5 });
+    const result = book.addOrder({ id: 2, userId: 'bob', side: 'buy', type: 'market', quantity: 5 });
+    expect(result.cancelledQuantity).toBe(0);
+    expect(result.cancelReason).toBeNull();
+  });
+
+  test("'no liquidity' when a market order hits an empty book", () => {
+    const book = new OrderBook();
+    const result = book.addOrder({ id: 1, userId: 'bob', side: 'buy', type: 'market', quantity: 5 });
+    expect(result.cancelReason).toBe('no liquidity');
+  });
+
+  test("'no liquidity' when a market order runs out part way", () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'alice', side: 'sell', price: 10000, quantity: 3 });
+    const result = book.addOrder({ id: 2, userId: 'bob', side: 'buy', type: 'market', quantity: 5 });
+    expect(result.cancelledQuantity).toBe(2);
+    expect(result.cancelReason).toBe('no liquidity');
+  });
+
+  test("'self-trade' for a limit order stopped by its own order", () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'alice', side: 'sell', price: 10000, quantity: 5 });
+    const result = book.addOrder({ id: 2, userId: 'alice', side: 'buy', price: 10000, quantity: 5 });
+    expect(result.cancelReason).toBe('self-trade');
+  });
+
+  test("'self-trade', not 'no liquidity', for a market order stopped by its own order", () => {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'bob', side: 'sell', price: 10000, quantity: 2 });
+    book.addOrder({ id: 2, userId: 'alice', side: 'sell', price: 10100, quantity: 5 });
+    const result = book.addOrder({ id: 3, userId: 'alice', side: 'buy', type: 'market', quantity: 10 });
+    expect(result.cancelledQuantity).toBe(8);
+    expect(result.cancelReason).toBe('self-trade');
+  });
+});
