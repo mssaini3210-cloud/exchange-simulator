@@ -1,6 +1,7 @@
 const express = require('express');
 const MatchingEngine = require('./engine/MatchingEngine');
 const ValidationError = require('./engine/ValidationError');
+const formatIST = require('./formatIST');
 
 const SYMBOLS = ['INFY', 'TCS', 'RELIANCE'];
 const MAX_TRADES_PER_SYMBOL = 100;
@@ -68,8 +69,13 @@ function createApp() {
       quantity: body.quantity,
     });
 
-    const timestamp = new Date().toISOString();
-    const trades = result.trades.map((trade) => ({ symbol: symbol, ...trade, timestamp: timestamp }));
+    const now = new Date();
+    const trades = result.trades.map((trade) => ({
+      symbol: symbol,
+      ...trade,
+      timestamp: now.toISOString(), // UTC, for machines
+      timeIST: formatIST(now), // Indian time, for people
+    }));
     recordTrades(symbol, trades);
 
     res.status(201).json({

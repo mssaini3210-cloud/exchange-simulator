@@ -1,6 +1,7 @@
 const request = require('supertest');
 const createApp = require('./app');
 const MatchingEngine = require('./engine/MatchingEngine');
+const formatIST = require('./formatIST');
 
 describe('x-user-id header', () => {
   test('a request without it is rejected with 401', async () => {
@@ -58,7 +59,7 @@ describe('POST /orders', () => {
     expect(second.body.orderId).toBe(2);
   });
 
-  test('a crossing order returns trades with symbol and timestamp', async () => {
+  test('a crossing order returns trades with symbol, UTC timestamp and IST time', async () => {
     const app = createApp();
     await postOrder(app, 'alice', { symbol: 'TCS', side: 'sell', price: 350000, quantity: 5 });
     const res = await postOrder(app, 'bob', { symbol: 'TCS', side: 'buy', price: 350000, quantity: 3 });
@@ -75,6 +76,8 @@ describe('POST /orders', () => {
       quantity: 3,
     });
     expect(new Date(trade.timestamp).toISOString()).toBe(trade.timestamp);
+    expect(trade.timestamp.endsWith('Z')).toBe(true); // still UTC
+    expect(trade.timeIST).toBe(formatIST(new Date(trade.timestamp))); // same moment
     expect(res.body.restingOrder).toBeNull();
   });
 
@@ -253,6 +256,7 @@ describe('GET /trades/:symbol', () => {
       ['TCS', 350000],
     ]);
     expect(res.body.trades[0]).toHaveProperty('timestamp');
+    expect(res.body.trades[0].timeIST).toBe(formatIST(new Date(res.body.trades[0].timestamp)));
   });
 
   test('keeps only the last 100 trades', async () => {
