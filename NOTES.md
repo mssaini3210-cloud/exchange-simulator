@@ -371,6 +371,172 @@ it conflicts with current data.
   number. That's safe up to about ₹90 lakh crore, far more than this app
   will ever see.
 
+## Day 5
+
+### What I built
+
+Money is real now. Every order, fill, trade and cancel is saved in
+PostgreSQL, and trades actually move cash and shares.
+
+- Order ids come from the `orders` table, so they keep counting after a
+  restart.
+- You can't buy without the cash or sell without the shares.
+- `GET /orders` shows my own orders (`?status=open`, `filled` or
+  `cancelled`).
+- `GET /trades` and `GET /me` read from the database.
+
+### Preview → database → apply
+
+**The problem:** the engine changes the in-memory book *while* it matches,
+and it can't undo that. If the database then failed, the book would show
+trades that were never saved, with orders gone from the book but still
+"open" in the database.
+
+**The fix: don't touch the book until the database has saved
+everything.**
+
+1. **Preview:** ask the engine "what *would* happen?" It walks the book
+   but changes nothing.
+2. **Database:** in one transaction, check the money, reserve it, save the
+   order, settle every fill, then `COMMIT`. If anything fails: `ROLLBACK`.
+   The book was never touched, so nothing is out of step.
+3. **Apply:** only now does the engine really do it.
+
+Why the preview and the apply always agree: the engine uses **the same
+code** for both (`planFills`), and the queue stops anything else changing
+the book in between.
+
+### What reserving means
+
+Reserving is **putting money or shares aside the moment an order is
+placed**, so the same rupee can't be promised to two orders.
+
+- Bob has ₹10,00,000 and places a buy for 2 TCS at ₹3,400.
+- ₹6,800 is reserved. His cash is still ₹10,00,000, but he can only
+  spend ₹9,93,200 on new orders.
+- If it fills, the reserved money is really paid. If he cancels, it's
+  released.
+- A sell reserves shares the same way.
+- A market buy has no price, so I preview it against the book and reserve
+  exactly what it would cost.
+
+If you don't have enough available, the order is rejected with
+`400 Insufficient funds` or `400 Insufficient shares`, and it isn't saved
+at all.
+
+### The price improvement refund
+
+A limit buy reserves at its **own** price, but it trades at the
+**seller's** price, which can be lower. The difference is given back.
+
+- Alice is selling INFY at ₹1,500. Bob places a buy for 4 at ₹1,510.
+- Reserved: 4 × ₹1,510 = **₹6,040**.
+- It trades at ₹1,500: Bob pays 4 × ₹1,500 = **₹6,000**.
+- The other **₹40** goes back to "available". Bob only paid ₹6,000.
+
+(Checked on the real server: Bob's cash went down by exactly ₹6,000.)
+
+Every way an order ends gives back what it still holds:
+
+- cancelled by the user
+- stopped by a self-trade
+- a market order that ran out of sellers
+- a server restart
+
+### Why a queue, even though Node is single-threaded
+
+Node runs one piece of code at a time, **but a request pauses every time
+it waits for the database**, and Node runs other requests in those gaps.
+
+Without a queue, two orders can get mixed up:
+- Order A previews the book... *waits for the database*...
+- Order B changes the book in the meantime...
+- Order A then applies to a book that's different from what it previewed.
+
+So every place and cancel goes through a **SerialQueue**: jobs run strictly
+one at a time, in arrival order. Reads (`/book`, `/me`, `/orders`,
+`/trades`) skip the queue.
+
+Two guards protect money:
+- **The queue** keeps the engine and the database in step.
+- **`SELECT ... FOR UPDATE`** locks the user's balance row inside the
+  transaction, so two transactions can't both spend the same cash.
+
+### What the queue costs
+
+- Every order waits for the previous order's **whole** database
+  transaction (about 10 database round trips).
+- That's a few hundred orders per second **in total**, for all users and
+  all stocks together. Busy times mean waiting, and extra CPU cores sit
+  idle.
+- Fine for a simulator. Real exchanges run one matcher per stock in
+  memory, check money in a separate system, and write to a log instead of
+  a database transaction per order.
+- Next step for me: one queue per stock, with the row locks protecting
+  shared cash.
+
+### What "halt trading" means
+
+If the engine ever does something different from what the preview said,
+the database and the book disagree. Only a bug can cause that, but if it
+happens:
+
+- That order gets a 500 and the error is logged.
+- **Every order and cancel after it gets `503 Trading halted, restart
+  required`.** Reads still work.
+- Restarting fixes it (see below).
+
+Stopping is safer than trading on a book I can't trust. Real exchanges halt
+too.
+
+### What happens on restart
+
+The in-memory book starts empty, so orders left "open" in the database can
+never match. Before the server accepts any request, in one transaction:
+
+- every open buy order gives back its reserved cash
+- every open sell order gives back its reserved shares
+- the orders are marked `cancelled` with reason `server restart`
+
+Trades that already happened stay done. (On the real server: 2 open orders
+were cancelled, everyone's reserved went back to 0, and the book was
+empty.) Rebuilding the book from the database comes later.
+
+### What the invariant and concurrency tests prove
+
+**Invariant test:** 5 users, 300 random orders and cancels, sent 10 at a
+time. Then it checks things that must **always** be true:
+
+- Total cash and total shares of each stock are exactly what everyone
+  started with. Nothing was created or lost.
+- Nobody has a negative balance.
+- Each user's reserved cash and shares match their open orders exactly.
+- Each order's filled amount equals the sum of its trades.
+- The in-memory book shows exactly the open orders in the database.
+
+It uses a **seeded** random generator: the same seed gives the same run,
+so a failure can be replayed exactly. Ten different seeds all passed.
+
+**Concurrency test:** one user sends 20 orders at the same moment
+(`Promise.all`), each costing a tenth of her cash. Exactly 10 succeed and
+10 get "Insufficient funds". It's the same with shares, and with market
+buys.
+
+**What I learned by removing the queue to test the tests:**
+- The concurrency test **still passed**, because the `FOR UPDATE` row lock
+  alone stops overspending.
+- The invariant test **failed**: the book and the database got out of
+  step, and trading halted.
+
+So the queue's real job is keeping the engine and the database in step,
+and the invariant test is the one that proves it.
+
+### Gotcha I hit
+
+PostgreSQL's `SUM` of a `BIGINT` column returns `NUMERIC`, which `pg`
+gives back as a **string** (`"0"`, not `0`). Add `::bigint`:
+`SELECT SUM(cash)::bigint ...`.
+
 ## Still to finish
 
 - Walkthrough parts 4, 5 and 6 with Claude Code.
