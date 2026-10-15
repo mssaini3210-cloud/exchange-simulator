@@ -2,13 +2,15 @@ const express = require('express');
 const MatchingEngine = require('./engine/MatchingEngine');
 const ValidationError = require('./engine/ValidationError');
 const formatIST = require('./formatIST');
+const { SYMBOLS } = require('./config');
+const createAuthRouter = require('./routes/auth');
 
-const SYMBOLS = ['INFY', 'TCS', 'RELIANCE'];
 const MAX_TRADES_PER_SYMBOL = 100;
 
 // Builds a new app with its own engine and in-memory state.
 // Tests call this once per test so they never share state.
-function createApp() {
+// pool is the PostgreSQL pool for users, balances and holdings.
+function createApp(pool) {
   const engine = new MatchingEngine(SYMBOLS);
   let nextOrderId = 1; // one counter for all symbols, so ids are unique everywhere
   const tradesBySymbol = new Map(); // symbol -> last 100 trades, oldest first
@@ -38,6 +40,7 @@ function createApp() {
   const app = express();
 
   app.use(express.json());
+  app.use('/auth', createAuthRouter(pool));
   app.use(requireUser);
 
   app.get('/symbols', (req, res) => {
