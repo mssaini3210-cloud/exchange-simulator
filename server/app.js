@@ -6,6 +6,7 @@ const { SYMBOLS } = require('./config');
 const createAuthRouter = require('./routes/auth');
 const createMarketDataRouter = require('./routes/marketData');
 const createOrdersRouter = require('./routes/orders');
+const createMeRouter = require('./routes/me');
 
 const MAX_TRADES_PER_SYMBOL = 100;
 
@@ -22,6 +23,7 @@ function createApp(pool) {
   app.use('/auth', createAuthRouter(pool)); // public
   app.use(createMarketDataRouter(engine, tradeLog)); // public
   app.use('/orders', createOrdersRouter(engine, tradeLog)); // needs a token
+  app.use('/me', createMeRouter(pool)); // needs a token
 
   // No route matched.
   app.use((req, res) => {

@@ -41,4 +41,39 @@ async function findUserByUsername(pool, username) {
   return result.rows[0];
 }
 
-module.exports = { createUser, findUserByUsername };
+// A user's cash and holdings, or null if there is no such user.
+async function getAccount(pool, userId) {
+  const userResult = await pool.query(
+    `SELECT users.id, users.username, balances.cash, balances.reserved_cash
+     FROM users
+     JOIN balances ON balances.user_id = users.id
+     WHERE users.id = $1`,
+    [userId]
+  );
+  if (userResult.rows.length === 0) {
+    return null;
+  }
+  const user = userResult.rows[0];
+
+  const holdingsResult = await pool.query(
+    `SELECT symbol, quantity, reserved_quantity
+     FROM holdings
+     WHERE user_id = $1
+     ORDER BY symbol`,
+    [userId]
+  );
+
+  return {
+    id: user.id,
+    username: user.username,
+    cash: user.cash,
+    reservedCash: user.reserved_cash,
+    holdings: holdingsResult.rows.map((row) => ({
+      symbol: row.symbol,
+      quantity: row.quantity,
+      reservedQuantity: row.reserved_quantity,
+    })),
+  };
+}
+
+module.exports = { createUser, findUserByUsername, getAccount };
