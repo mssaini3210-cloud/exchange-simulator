@@ -1,10 +1,16 @@
 const express = require('express');
 const bcrypt = require('bcrypt');
 const ValidationError = require('../engine/ValidationError');
-const { createUser } = require('../db/users');
+const { createUser, findUserByUsername } = require('../db/users');
+const { createToken } = require('../auth/tokens');
 
 const BCRYPT_ROUNDS = 10;
 const UNIQUE_VIOLATION = '23505'; // pg error code
+
+// Compared against when the username doesn't exist, so a wrong username
+// takes as long as a wrong password. Otherwise the response time would
+// tell an attacker which usernames are real.
+const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', BCRYPT_ROUNDS);
 
 function createAuthRouter(pool) {
   const router = express.Router();
@@ -25,6 +31,24 @@ function createAuthRouter(pool) {
       }
       throw err;
     }
+  });
+
+  router.post('/login', async (req, res) => {
+    const body = req.body || {};
+    if (typeof body.username !== 'string' || typeof body.password !== 'string') {
+      throw new ValidationError('Username and password are required');
+    }
+
+    const user = await findUserByUsername(pool, body.username);
+    const hash = user === null ? DUMMY_HASH : user.password_hash;
+    const passwordMatches = await bcrypt.compare(body.password, hash);
+    if (user === null || !passwordMatches) {
+      // Same answer for both, so login can't be used to find usernames.
+      res.status(401).json({ error: 'Invalid username or password' });
+      return;
+    }
+
+    res.json({ token: createToken(user.id) });
   });
 
   return router;

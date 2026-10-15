@@ -30,4 +30,15 @@ async function createUser(pool, username, passwordHash) {
   }
 }
 
-module.exports = { createUser };
+// The user with this username, or null if there isn't one.
+async function findUserByUsername(pool, username) {
+  const result = await pool.query('SELECT id, username, password_hash FROM users WHERE username = $1', [
+    username,
+  ]);
+  if (result.rows.length === 0) {
+    return null;
+  }
+  return result.rows[0];
+}
+
+module.exports = { createUser, findUserByUsername };

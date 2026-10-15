@@ -2,6 +2,7 @@ const request = require('supertest');
 const bcrypt = require('bcrypt');
 const { Client } = require('pg');
 const createApp = require('../app');
+const { verifyToken } = require('../auth/tokens');
 const { createTestPool, resetDatabase, clearTables } = require('./helpers');
 
 const pool = createTestPool();
@@ -119,5 +120,59 @@ describe('POST /auth/signup', () => {
   test('signup does not need the x-user-id header', async () => {
     const res = await signup(createApp(pool), { username: 'alice', password: 'correct-horse' });
     expect(res.status).toBe(201);
+  });
+});
+
+describe('POST /auth/login', () => {
+  function login(app, body) {
+    return request(app).post('/auth/login').send(body);
+  }
+
+  test('the right password returns a token for that user', async () => {
+    const app = createApp(pool);
+    await signup(app, { username: 'alice', password: 'correct-horse' });
+    await signup(app, { username: 'bob', password: 'battery-staple' });
+
+    const res = await login(app, { username: 'bob', password: 'battery-staple' });
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body)).toEqual(['token']);
+    expect(verifyToken(res.body.token)).toBe(2);
+  });
+
+  test('a wrong password is a 401', async () => {
+    const app = createApp(pool);
+    await signup(app, { username: 'alice', password: 'correct-horse' });
+    const res = await login(app, { username: 'alice', password: 'wrong-password' });
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: 'Invalid username or password' });
+  });
+
+  test('an unknown username gets exactly the same 401', async () => {
+    const res = await login(createApp(pool), { username: 'nobody', password: 'correct-horse' });
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: 'Invalid username or password' });
+  });
+
+  test('usernames are case-sensitive', async () => {
+    const app = createApp(pool);
+    await signup(app, { username: 'alice', password: 'correct-horse' });
+    const res = await login(app, { username: 'Alice', password: 'correct-horse' });
+    expect(res.status).toBe(401);
+  });
+
+  test('missing username or password is a 400', async () => {
+    const app = createApp(pool);
+    for (const body of [{}, { username: 'alice' }, { password: 'correct-horse' }, { username: 1, password: 2 }]) {
+      const res = await login(app, body);
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: 'Username and password are required' });
+    }
+  });
+
+  test('the response never includes the password hash', async () => {
+    const app = createApp(pool);
+    await signup(app, { username: 'alice', password: 'correct-horse' });
+    const res = await login(app, { username: 'alice', password: 'correct-horse' });
+    expect(JSON.stringify(res.body)).not.toContain('$2b$');
   });
 });
