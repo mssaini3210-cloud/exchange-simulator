@@ -479,3 +479,78 @@ describe('cancelling releases what the order still holds', () => {
     expect((await cancel(app, BOB, 'TCS', 1)).status).toBe(503);
   });
 });
+
+describe('GET /orders', () => {
+  function getOrders(app, userId, query) {
+    return request(app)
+      .get('/orders' + (query || ''))
+      .set('Authorization', authHeader(userId));
+  }
+
+  async function placeMixOfOrders(app) {
+    await postOrder(app, ALICE, { symbol: 'INFY', side: 'sell', price: 150000, quantity: 5 }); // 1: filled by Bob
+    await postOrder(app, BOB, { symbol: 'INFY', side: 'buy', price: 150000, quantity: 5 }); // 2: Bob's, filled
+    await postOrder(app, ALICE, { symbol: 'TCS', side: 'buy', price: 340000, quantity: 2 }); // 3: open
+    const toCancel = await postOrder(app, ALICE, { symbol: 'TCS', side: 'sell', price: 360000, quantity: 3 }); // 4
+    await request(app).delete('/orders/TCS/' + toCancel.body.orderId).set('Authorization', authHeader(ALICE));
+    await postOrder(app, ALICE, { symbol: 'RELIANCE', side: 'buy', type: 'market', quantity: 1 }); // 5: no liquidity
+  }
+
+  test("lists only the user's own orders, newest first, with all the fields", async () => {
+    const app = createApp(pool);
+    await placeMixOfOrders(app);
+    const res = await getOrders(app, ALICE);
+    expect(res.status).toBe(200);
+    expect(res.body.orders.map((o) => [o.id, o.status, o.cancelReason])).toEqual([
+      [5, 'cancelled', 'no liquidity'],
+      [4, 'cancelled', 'cancelled by user'],
+      [3, 'open', null],
+      [1, 'filled', null],
+    ]);
+    expect(res.body.orders[3]).toMatchObject({
+      id: 1,
+      symbol: 'INFY',
+      side: 'sell',
+      type: 'limit',
+      price: 150000,
+      quantity: 5,
+      remaining: 0,
+      filledQuantity: 5,
+    });
+    expect(res.body.orders[0].price).toBeNull(); // market order
+    expect(new Date(res.body.orders[0].createdAt).toISOString()).toBe(res.body.orders[0].createdAt);
+  });
+
+  test('filters by status', async () => {
+    const app = createApp(pool);
+    await placeMixOfOrders(app);
+    expect((await getOrders(app, ALICE, '?status=open')).body.orders.map((o) => o.id)).toEqual([3]);
+    expect((await getOrders(app, ALICE, '?status=filled')).body.orders.map((o) => o.id)).toEqual([1]);
+    expect((await getOrders(app, ALICE, '?status=cancelled')).body.orders.map((o) => o.id)).toEqual([5, 4]);
+    expect((await getOrders(app, BOB, '?status=filled')).body.orders.map((o) => o.id)).toEqual([2]);
+  });
+
+  test('a partly filled open order shows how much has filled', async () => {
+    const app = createApp(pool);
+    await postOrder(app, ALICE, { symbol: 'INFY', side: 'sell', price: 150000, quantity: 10 });
+    await postOrder(app, BOB, { symbol: 'INFY', side: 'buy', price: 150000, quantity: 4 });
+    const res = await getOrders(app, ALICE, '?status=open');
+    expect(res.body.orders[0]).toMatchObject({ remaining: 6, filledQuantity: 4, status: 'open' });
+  });
+
+  test('no orders yet is an empty list', async () => {
+    const res = await getOrders(createApp(pool), ERIN);
+    expect(res.body).toEqual({ orders: [] });
+  });
+
+  test('an unknown status is a 400', async () => {
+    const res = await getOrders(createApp(pool), ALICE, '?status=pending');
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'Status must be one of: open, filled, cancelled' });
+  });
+
+  test('needs a token', async () => {
+    const res = await request(createApp(pool)).get('/orders');
+    expect(res.status).toBe(401);
+  });
+});

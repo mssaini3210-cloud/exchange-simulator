@@ -2,7 +2,11 @@ const express = require('express');
 const requireAuth = require('../auth/requireAuth');
 const placeOrder = require('../trading/placeOrder');
 const cancelOrder = require('../trading/cancelOrder');
+const { listOrders } = require('../db/orders');
 const rejectUnknownSymbol = require('./rejectUnknownSymbol');
+
+const STATUSES = ['open', 'filled', 'cancelled'];
+const MAX_ORDERS = 100;
 
 // Placing and cancelling orders. Every route here needs a token.
 // trading is { engine, queue, halted } (see app.js).
@@ -11,6 +15,32 @@ function createOrdersRouter(pool, trading) {
   const engine = trading.engine;
 
   router.use(requireAuth);
+
+  // The logged-in user's own orders, newest first. Optional ?status=open,
+  // filled or cancelled. A read, so it doesn't need the queue.
+  router.get('/', async (req, res) => {
+    const status = req.query.status;
+    if (status !== undefined && !STATUSES.includes(status)) {
+      res.status(400).json({ error: 'Status must be one of: ' + STATUSES.join(', ') });
+      return;
+    }
+    const rows = await listOrders(pool, req.userId, status === undefined ? null : status, MAX_ORDERS);
+    const orders = rows.map((row) => ({
+      id: row.id,
+      symbol: row.symbol,
+      side: row.side,
+      type: row.type,
+      price: row.price,
+      quantity: row.quantity,
+      remaining: row.remaining,
+      filledQuantity: row.quantity - row.remaining,
+      status: row.status,
+      cancelReason: row.cancel_reason,
+      createdAt: row.created_at.toISOString(),
+      updatedAt: row.updated_at.toISOString(),
+    }));
+    res.json({ orders: orders });
+  });
 
   router.post('/', async (req, res) => {
     const body = req.body || {};

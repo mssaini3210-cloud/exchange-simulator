@@ -162,7 +162,22 @@ async function recentTrades(pool, symbol, limit) {
   return result.rows;
 }
 
+// A user's orders, newest first. status is 'open', 'filled', 'cancelled'
+// or null for all of them.
+async function listOrders(pool, userId, status, limit) {
+  const result = await pool.query(
+    `SELECT id, symbol, side, type, price, quantity, remaining, status, cancel_reason, created_at, updated_at
+     FROM orders
+     WHERE user_id = $1 AND ($2::text IS NULL OR status = $2)
+     ORDER BY id DESC
+     LIMIT $3`,
+    [userId, status, limit]
+  );
+  return result.rows;
+}
+
 module.exports = {
+  listOrders,
   lockBalance,
   lockHolding,
   changeReservedCash,
