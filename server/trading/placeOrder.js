@@ -2,6 +2,7 @@ const ValidationError = require('../engine/ValidationError');
 const formatIST = require('../formatIST');
 const { MAX_PRICE, MAX_QUANTITY } = require('../config');
 const TradingHaltedError = require('./TradingHaltedError');
+const halt = require('./halt');
 const db = require('../db/orders');
 
 // Places one order. Must run inside the SerialQueue.
@@ -133,13 +134,6 @@ async function placeOrder(pool, trading, request) {
     cancelledQuantity: preview.cancelledQuantity,
     cancelReason: preview.cancelReason,
   };
-}
-
-// Stop all trading until a restart. A restart cancels every open order
-// and releases its reservation, which makes the book and database agree.
-function halt(trading, err) {
-  trading.halted = true;
-  console.error('TRADING HALTED: engine and database disagree.', err);
 }
 
 function checkLimits(price, quantity) {

@@ -1,6 +1,7 @@
 const express = require('express');
 const requireAuth = require('../auth/requireAuth');
 const placeOrder = require('../trading/placeOrder');
+const cancelOrder = require('../trading/cancelOrder');
 const rejectUnknownSymbol = require('./rejectUnknownSymbol');
 
 // Placing and cancelling orders. Every route here needs a token.
@@ -37,7 +38,7 @@ function createOrdersRouter(pool, trading) {
     res.status(201).json(result);
   });
 
-  router.delete('/:symbol/:id', (req, res) => {
+  router.delete('/:symbol/:id', async (req, res) => {
     const symbol = req.params.symbol;
     if (rejectUnknownSymbol(engine, res, symbol)) {
       return;
@@ -48,18 +49,18 @@ function createOrdersRouter(pool, trading) {
     }
     const orderId = Number(req.params.id);
 
-    const order = engine.getOrder(symbol, orderId);
-    if (order === null) {
+    const outcome = await trading.queue.run(() =>
+      cancelOrder(pool, trading, { userId: req.userId, symbol: symbol, orderId: orderId })
+    );
+    if (outcome === 'not found') {
       // Never existed, already filled, or already cancelled.
       res.status(404).json({ error: 'Order not found' });
       return;
     }
-    if (order.userId !== req.userId) {
+    if (outcome === 'forbidden') {
       res.status(403).json({ error: 'You can only cancel your own orders' });
       return;
     }
-
-    engine.cancelOrder(symbol, orderId);
     res.json({ orderId: orderId, symbol: symbol, cancelled: true });
   });
 

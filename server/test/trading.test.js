@@ -387,3 +387,95 @@ describe('when something fails', () => {
     expect((await request(app).get('/book/INFY')).status).toBe(200);
   });
 });
+
+describe('cancelling releases what the order still holds', () => {
+  function cancel(app, userId, symbol, id) {
+    return request(app).delete('/orders/' + symbol + '/' + id).set('Authorization', authHeader(userId));
+  }
+
+  test('cancelling a resting buy releases all its cash', async () => {
+    const app = createApp(pool);
+    const buy = await postOrder(app, ALICE, { symbol: 'INFY', side: 'buy', price: 150000, quantity: 10 });
+    const res = await cancel(app, ALICE, 'INFY', buy.body.orderId);
+    expect(res.status).toBe(200);
+    expect(await balanceOf(ALICE)).toEqual({ cash: STARTING_CASH, reserved: 0 });
+    expect(await orderRow(buy.body.orderId)).toMatchObject({
+      status: 'cancelled',
+      cancel_reason: 'cancelled by user',
+      remaining: 10,
+      reserved_cash: 0,
+    });
+    expect((await request(app).get('/book/INFY')).body.bids).toEqual([]);
+  });
+
+  test('cancelling a resting sell releases its shares', async () => {
+    const app = createApp(pool);
+    const sell = await postOrder(app, ALICE, { symbol: 'TCS', side: 'sell', price: 350000, quantity: 30 });
+    await cancel(app, ALICE, 'TCS', sell.body.orderId);
+    expect(await sharesOf(ALICE, 'TCS')).toEqual({ quantity: 100, reserved: 0 });
+    expect(await orderRow(sell.body.orderId)).toMatchObject({ status: 'cancelled', remaining: 30 });
+  });
+
+  test('cancelling a partly filled buy releases only what is left', async () => {
+    const app = createApp(pool);
+    const buy = await postOrder(app, ALICE, { symbol: 'INFY', side: 'buy', price: 150000, quantity: 10 });
+    await postOrder(app, BOB, { symbol: 'INFY', side: 'sell', price: 150000, quantity: 4 });
+    expect(await balanceOf(ALICE)).toEqual({ cash: STARTING_CASH - 600000, reserved: 900000 });
+
+    await cancel(app, ALICE, 'INFY', buy.body.orderId);
+    expect(await balanceOf(ALICE)).toEqual({ cash: STARTING_CASH - 600000, reserved: 0 });
+    expect(await sharesOf(ALICE, 'INFY')).toEqual({ quantity: 104, reserved: 0 });
+    expect(await orderRow(buy.body.orderId)).toMatchObject({ status: 'cancelled', remaining: 6, reserved_cash: 0 });
+  });
+
+  test('cancelling a partly filled sell releases only the unsold shares', async () => {
+    const app = createApp(pool);
+    const sell = await postOrder(app, ALICE, { symbol: 'INFY', side: 'sell', price: 150000, quantity: 10 });
+    await postOrder(app, BOB, { symbol: 'INFY', side: 'buy', price: 150000, quantity: 3 });
+    await cancel(app, ALICE, 'INFY', sell.body.orderId);
+    expect(await sharesOf(ALICE, 'INFY')).toEqual({ quantity: 97, reserved: 0 });
+  });
+
+  test("someone else's order: 403, and nothing changes", async () => {
+    const app = createApp(pool);
+    const buy = await postOrder(app, ALICE, { symbol: 'INFY', side: 'buy', price: 150000, quantity: 10 });
+    expect((await cancel(app, BOB, 'INFY', buy.body.orderId)).status).toBe(403);
+    expect(await balanceOf(ALICE)).toEqual({ cash: STARTING_CASH, reserved: 1500000 });
+    expect(await orderRow(buy.body.orderId)).toMatchObject({ status: 'open' });
+  });
+
+  test('a database failure during cancel rolls back, and the order stays in the book', async () => {
+    const app = createApp(pool);
+    const buy = await postOrder(app, ALICE, { symbol: 'INFY', side: 'buy', price: 150000, quantity: 10 });
+
+    const originalQuery = Client.prototype.query;
+    jest.spyOn(Client.prototype, 'query').mockImplementation(function (text, ...rest) {
+      if (typeof text === 'string' && text.includes("SET status = 'cancelled'")) {
+        return Promise.reject(new Error('simulated database failure'));
+      }
+      return originalQuery.call(this, text, ...rest);
+    });
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    expect((await cancel(app, ALICE, 'INFY', buy.body.orderId)).status).toBe(500);
+    jest.restoreAllMocks();
+
+    expect(await balanceOf(ALICE)).toEqual({ cash: STARTING_CASH, reserved: 1500000 });
+    expect(await orderRow(buy.body.orderId)).toMatchObject({ status: 'open', reserved_cash: 1500000 });
+    expect((await request(app).get('/book/INFY')).body.bids).toEqual([{ price: 150000, quantity: 10 }]);
+    // A retry works.
+    expect((await cancel(app, ALICE, 'INFY', buy.body.orderId)).status).toBe(200);
+  });
+
+  test('if the order is open in the database but missing from the book, trading halts', async () => {
+    const app = createApp(pool);
+    const buy = await postOrder(app, ALICE, { symbol: 'INFY', side: 'buy', price: 150000, quantity: 10 });
+    jest.spyOn(MatchingEngine.prototype, 'cancelOrder').mockImplementationOnce(() => false);
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    expect((await cancel(app, ALICE, 'INFY', buy.body.orderId)).status).toBe(500);
+    const next = await postOrder(app, BOB, { symbol: 'TCS', side: 'buy', price: 100, quantity: 1 });
+    expect(next.status).toBe(503);
+    expect((await cancel(app, BOB, 'TCS', 1)).status).toBe(503);
+  });
+});
