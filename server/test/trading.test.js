@@ -554,3 +554,53 @@ describe('GET /orders', () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe('startup cleanup', () => {
+  const { cancelOpenOrders } = require('../trading/startup');
+
+  test('cancels every open order and releases its cash and shares', async () => {
+    const app = createApp(pool);
+    await postOrder(app, ALICE, { symbol: 'INFY', side: 'buy', price: 150000, quantity: 10 }); // open buy
+    await postOrder(app, ALICE, { symbol: 'TCS', side: 'buy', price: 320000, quantity: 2 }); // another open buy, below Carol's
+    await postOrder(app, ALICE, { symbol: 'RELIANCE', side: 'sell', price: 250000, quantity: 20 }); // open sell
+    await postOrder(app, BOB, { symbol: 'INFY', side: 'sell', price: 160000, quantity: 7 }); // open sell
+    // A partly filled buy: 4 of Carol's 10 fill.
+    await postOrder(app, CAROL, { symbol: 'TCS', side: 'buy', price: 330000, quantity: 10 });
+    await postOrder(app, DAVE, { symbol: 'TCS', side: 'sell', price: 330000, quantity: 4 });
+
+    expect(await balanceOf(ALICE)).toEqual({ cash: STARTING_CASH, reserved: 1500000 + 640000 });
+    expect(await balanceOf(CAROL)).toEqual({ cash: STARTING_CASH - 1320000, reserved: 1980000 });
+
+    expect(await cancelOpenOrders(pool)).toBe(5);
+
+    for (const userId of [ALICE, BOB, CAROL, DAVE]) {
+      expect((await balanceOf(userId)).reserved).toBe(0);
+    }
+    expect(await sharesOf(ALICE, 'RELIANCE')).toEqual({ quantity: 100, reserved: 0 });
+    expect(await sharesOf(BOB, 'INFY')).toEqual({ quantity: 100, reserved: 0 });
+    // Cash that was really spent stays spent.
+    expect(await balanceOf(CAROL)).toEqual({ cash: STARTING_CASH - 1320000, reserved: 0 });
+
+    const statuses = await pool.query('SELECT status, cancel_reason, COUNT(*) AS count FROM orders GROUP BY 1, 2 ORDER BY 1, 2');
+    expect(statuses.rows).toEqual([
+      { status: 'cancelled', cancel_reason: 'server restart', count: 5 },
+      { status: 'filled', cancel_reason: null, count: 1 },
+    ]);
+    const leftover = await pool.query('SELECT SUM(reserved_cash)::bigint AS total FROM orders');
+    expect(leftover.rows[0].total).toBe(0);
+  });
+
+  test('with no open orders it changes nothing', async () => {
+    expect(await cancelOpenOrders(pool)).toBe(0);
+    expect(await balanceOf(ALICE)).toEqual({ cash: STARTING_CASH, reserved: 0 });
+  });
+
+  test('after a restart the new book is empty and the user can trade with all their cash again', async () => {
+    await postOrder(createApp(pool), ALICE, { symbol: 'INFY', side: 'buy', price: STARTING_CASH, quantity: 1 });
+    await cancelOpenOrders(pool);
+    const app = createApp(pool); // the restarted server
+    expect((await request(app).get('/book/INFY')).body.bids).toEqual([]);
+    const again = await postOrder(app, ALICE, { symbol: 'INFY', side: 'buy', price: STARTING_CASH, quantity: 1 });
+    expect(again.status).toBe(201);
+  });
+});
