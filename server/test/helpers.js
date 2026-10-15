@@ -1,5 +1,6 @@
 const { createPool } = require('../db/pool');
 const { runMigrations } = require('../db/migrate');
+const { createToken } = require('../auth/tokens');
 
 // A pool for the test database. Refuses to run against the real database,
 // because resetDatabase drops every table.
@@ -28,4 +29,10 @@ async function clearTables(pool) {
   await pool.query('TRUNCATE users, balances, holdings, orders, trades RESTART IDENTITY CASCADE');
 }
 
-module.exports = { createTestPool, resetDatabase, clearTables };
+// An Authorization header value for a user, without going through login.
+// The order routes only check the token, so this is enough for them.
+function authHeader(userId) {
+  return 'Bearer ' + createToken(userId);
+}
+
+module.exports = { createTestPool, resetDatabase, clearTables, authHeader };

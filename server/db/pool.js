@@ -9,7 +9,13 @@ function createPool(connectionString) {
   if (!connectionString) {
     throw new Error('Database URL is not set');
   }
-  return new Pool({ connectionString: connectionString });
+  const pool = new Pool({ connectionString: connectionString });
+  // An idle connection can fail (for example if PostgreSQL restarts).
+  // Without this handler, that error would crash the whole server.
+  pool.on('error', (err) => {
+    console.error('Unexpected database error:', err.message);
+  });
+  return pool;
 }
 
 module.exports = { createPool };

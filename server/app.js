@@ -1,9 +1,11 @@
 const express = require('express');
 const MatchingEngine = require('./engine/MatchingEngine');
 const ValidationError = require('./engine/ValidationError');
-const formatIST = require('./formatIST');
+const TradeLog = require('./tradeLog');
 const { SYMBOLS } = require('./config');
 const createAuthRouter = require('./routes/auth');
+const createMarketDataRouter = require('./routes/marketData');
+const createOrdersRouter = require('./routes/orders');
 
 const MAX_TRADES_PER_SYMBOL = 100;
 
@@ -12,128 +14,14 @@ const MAX_TRADES_PER_SYMBOL = 100;
 // pool is the PostgreSQL pool for users, balances and holdings.
 function createApp(pool) {
   const engine = new MatchingEngine(SYMBOLS);
-  let nextOrderId = 1; // one counter for all symbols, so ids are unique everywhere
-  const tradesBySymbol = new Map(); // symbol -> last 100 trades, oldest first
-  for (const symbol of SYMBOLS) {
-    tradesBySymbol.set(symbol, []);
-  }
-
-  function recordTrades(symbol, trades) {
-    const list = tradesBySymbol.get(symbol);
-    for (const trade of trades) {
-      list.push(trade);
-      if (list.length > MAX_TRADES_PER_SYMBOL) {
-        list.shift();
-      }
-    }
-  }
-
-  // Sends a 404 and returns true if the symbol isn't traded here.
-  function rejectUnknownSymbol(res, symbol) {
-    if (engine.hasSymbol(symbol)) {
-      return false;
-    }
-    res.status(404).json({ error: 'Unknown symbol: ' + symbol });
-    return true;
-  }
-
+  const tradeLog = new TradeLog(SYMBOLS, MAX_TRADES_PER_SYMBOL);
   const app = express();
 
   app.use(express.json());
-  app.use('/auth', createAuthRouter(pool));
-  app.use(requireUser);
 
-  app.get('/symbols', (req, res) => {
-    res.json({ symbols: engine.getSymbols() });
-  });
-
-  app.post('/orders', (req, res) => {
-    const body = req.body || {};
-    const symbol = body.symbol;
-    if (symbol === undefined) {
-      res.status(400).json({ error: 'Symbol is required' });
-      return;
-    }
-    if (rejectUnknownSymbol(res, symbol)) {
-      return;
-    }
-
-    const orderId = nextOrderId;
-    nextOrderId += 1;
-
-    // Pick the fields one by one: id and userId never come from the body.
-    const result = engine.addOrder({
-      symbol: symbol,
-      id: orderId,
-      userId: req.userId,
-      side: body.side,
-      type: body.type,
-      price: body.price,
-      quantity: body.quantity,
-    });
-
-    const now = new Date();
-    const trades = result.trades.map((trade) => ({
-      symbol: symbol,
-      ...trade,
-      timestamp: now.toISOString(), // UTC, for machines
-      timeIST: formatIST(now), // Indian time, for people
-    }));
-    recordTrades(symbol, trades);
-
-    res.status(201).json({
-      orderId: orderId,
-      symbol: symbol,
-      trades: trades,
-      restingOrder: result.restingOrder,
-      cancelledQuantity: result.cancelledQuantity,
-      cancelReason: result.cancelReason,
-    });
-  });
-
-  app.delete('/orders/:symbol/:id', (req, res) => {
-    const symbol = req.params.symbol;
-    if (rejectUnknownSymbol(res, symbol)) {
-      return;
-    }
-    if (!/^[0-9]+$/.test(req.params.id)) {
-      res.status(400).json({ error: 'Order id must be a positive integer' });
-      return;
-    }
-    const orderId = Number(req.params.id);
-
-    const order = engine.getOrder(symbol, orderId);
-    if (order === null) {
-      // Never existed, already filled, or already cancelled.
-      res.status(404).json({ error: 'Order not found' });
-      return;
-    }
-    if (order.userId !== req.userId) {
-      res.status(403).json({ error: 'You can only cancel your own orders' });
-      return;
-    }
-
-    engine.cancelOrder(symbol, orderId);
-    res.json({ orderId: orderId, symbol: symbol, cancelled: true });
-  });
-
-  app.get('/book/:symbol', (req, res) => {
-    const symbol = req.params.symbol;
-    if (rejectUnknownSymbol(res, symbol)) {
-      return;
-    }
-    const depth = engine.getBook(symbol).getDepth(10);
-    res.json({ symbol: symbol, bids: depth.bids, asks: depth.asks });
-  });
-
-  app.get('/trades/:symbol', (req, res) => {
-    const symbol = req.params.symbol;
-    if (rejectUnknownSymbol(res, symbol)) {
-      return;
-    }
-    const newestFirst = tradesBySymbol.get(symbol).slice().reverse();
-    res.json({ symbol: symbol, trades: newestFirst });
-  });
+  app.use('/auth', createAuthRouter(pool)); // public
+  app.use(createMarketDataRouter(engine, tradeLog)); // public
+  app.use('/orders', createOrdersRouter(engine, tradeLog)); // needs a token
 
   // No route matched.
   app.use((req, res) => {
@@ -143,17 +31,6 @@ function createApp(pool) {
   app.use(handleError);
 
   return app;
-}
-
-// Until there is real auth, the user is whoever the x-user-id header says.
-function requireUser(req, res, next) {
-  const userId = req.get('x-user-id');
-  if (userId === undefined || userId.trim() === '') {
-    res.status(401).json({ error: 'Missing x-user-id header' });
-    return;
-  }
-  req.userId = userId;
-  next();
 }
 
 // Express calls this when a route throws. Bad input becomes a 400 with

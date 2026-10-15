@@ -117,9 +117,20 @@ describe('POST /auth/signup', () => {
     expect(multiByte.status).toBe(400);
   });
 
-  test('signup does not need the x-user-id header', async () => {
-    const res = await signup(createApp(pool), { username: 'alice', password: 'correct-horse' });
+});
+
+describe('signup, login, then trade', () => {
+  test('a token from login lets the user place an order as themselves', async () => {
+    const app = createApp(pool);
+    await signup(app, { username: 'alice', password: 'correct-horse' });
+    const login = await request(app).post('/auth/login').send({ username: 'alice', password: 'correct-horse' });
+
+    const res = await request(app)
+      .post('/orders')
+      .set('Authorization', 'Bearer ' + login.body.token)
+      .send({ symbol: 'INFY', side: 'buy', price: 150000, quantity: 5 });
     expect(res.status).toBe(201);
+    expect(res.body.restingOrder.userId).toBe(1);
   });
 });
 
