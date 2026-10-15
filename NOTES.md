@@ -238,6 +238,139 @@ It's a placeholder so I can build "whose order is this?" now. Real auth
 token, and every request must carry that token. The server checks the
 signature, so a faked token is rejected.
 
+## Day 4
+
+### What's in PostgreSQL now, and what's still in memory
+
+| In PostgreSQL (survives a restart) | Still in memory (gone on restart) |
+|---|---|
+| Users and their password hashes | The order books |
+| Each user's cash | The last 100 trades |
+| Each user's shares | The order id counter |
+
+The `orders` and `trades` tables exist but stay empty until Day 5.
+Balances aren't checked yet either: anyone can still buy anything.
+
+### The five tables
+
+- **users**: who can log in. Id, username (unique), password hash, when
+  they signed up.
+- **balances**: one row per user. How much cash they have, and how much of
+  it is reserved.
+- **holdings**: one row per user per stock. How many shares they have, and
+  how many are reserved.
+- **orders**: every order ever placed (from Day 5).
+- **trades**: every trade that happened (from Day 5).
+
+### What "reserved" means
+
+Money or shares that are **promised to an open order**, so you can't spend
+them twice. Used from Day 5.
+
+- Alice has ₹10,00,000. She places a buy for 10 INFY at ₹1,500.
+- ₹15,000 is now reserved. Cash stays ₹10,00,000, but she can only spend
+  ₹9,85,000 on new orders.
+- If the order fills, the ₹15,000 is really paid. If she cancels, it's
+  unreserved.
+
+Same for shares: Alice has 100 TCS and places a sell for 30. 30 are
+reserved, so she can only sell 70 more.
+
+The table stores the **total** and the **reserved** part, and the database
+checks `reserved <= total`. So it's impossible to reserve money you don't
+have, even if my code has a bug.
+
+### What a migration is
+
+A numbered SQL file that changes the database structure, like
+`001_create_users.sql`. A small script runs the files in order and
+remembers which ones already ran (in a `schema_migrations` table), so
+running it again does nothing.
+
+- Every computer (mine, the test database, a server later) ends up with
+  exactly the same tables.
+- Each file runs in a transaction: if it fails halfway, nothing from it is
+  applied.
+- **Rule: never edit a migration that already ran.** To change something,
+  add a new file (`006_...sql`).
+
+### Why passwords are hashed with bcrypt
+
+I never store the password, only a **hash**: a scrambled version that
+can't be turned back into the password. At login, bcrypt hashes what was
+typed and compares the two.
+
+- **If the database leaks, the passwords don't.**
+- **Salt**: bcrypt adds random data first, so two users with the same
+  password get different hashes. Ready-made tables of precomputed hashes
+  are useless against it.
+- **Slow on purpose**: each guess takes a fraction of a second. That's
+  nothing for one login, but it makes trying billions of guesses far too
+  slow.
+- **Limit**: bcrypt ignores anything after 72 bytes, so I reject longer
+  passwords instead of pretending they're stronger.
+
+### What a JWT is, and why it can't be forged
+
+A **JWT** (JSON Web Token) is the "ticket" login gives you. It has three
+parts separated by dots: `header.payload.signature`.
+
+- The **payload** says `{ sub: "1", exp: <tomorrow> }`, meaning "this is
+  user 1, valid until tomorrow".
+- The **signature** is made from the header, the payload and my
+  `JWT_SECRET`. Only the server knows the secret.
+
+Change one letter of the payload (say, user 1 → user 2) and the signature
+no longer matches, so the server rejects it. Making a new valid signature
+needs the secret. So nobody can forge a token.
+
+But: the payload is only **encoded, not encrypted**, so anyone can read it.
+Never put secrets in a JWT. And whoever holds the token *is* you until it
+expires (1 day), so it must be kept safe.
+
+How it's used: send `Authorization: Bearer <token>` with each request. My
+middleware checks the signature and expiry, then sets `req.userId`.
+
+### Why login gives the same error for a wrong username and a wrong password
+
+If I said "no such user" vs "wrong password", an attacker could try names
+and learn **which usernames exist**, then focus on those. So both get:
+`401 Invalid username or password`.
+
+**The timing trick**: the message isn't the only clue. Checking a password
+with bcrypt is slow on purpose. If the username doesn't exist and I return
+straight away, that answer comes back much **faster**, and the speed gives
+the secret away. So for an unknown username I still run bcrypt against a
+**dummy hash**. Both cases take about the same time.
+
+### Why signup uses a transaction
+
+Signup does 5 inserts: the user, their balance, and 3 holdings. A
+**transaction** means "all of these or none of them". If the 4th insert
+fails, the first 3 are undone (`ROLLBACK`). Without it, I could end up with
+a user who has no cash row and breaks every later query. A test forces a
+failure halfway and checks that nothing was saved.
+
+### What 409 means
+
+**409 Conflict**: your request is fine, but it clashes with something that
+already exists. Example: signing up as `alice` when `alice` is taken.
+PostgreSQL rejects the duplicate (error code `23505`) because `username` is
+`UNIQUE`, and I turn that into a 409.
+
+Compare: **400** = your input is wrong. **409** = your input is fine, but
+it conflicts with current data.
+
+### Why money uses BIGINT
+
+- `INTEGER` tops out at about 2.1 billion. In paise, that's only about
+  **₹2.1 crore**, and a good trader could pass that.
+- `BIGINT` goes up to about 9 × 10¹⁸, which is more than enough.
+- Catch: the `pg` library returns BIGINT as a **string**, because
+  JavaScript numbers lose precision above 2⁵³. I convert it back to a
+  number. That's safe up to about ₹90 lakh crore, far more than this app
+  will ever see.
+
 ## Still to finish
 
 - Walkthrough parts 4, 5 and 6 with Claude Code.
