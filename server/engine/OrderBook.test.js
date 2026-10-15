@@ -582,3 +582,124 @@ describe('OrderBook: getOrder', () => {
     expect(book.getOrder(3)).toBeNull(); // cancelled
   });
 });
+
+describe('OrderBook: previewOrder', () => {
+  function bookWithAsks() {
+    const book = new OrderBook();
+    book.addOrder({ id: 1, userId: 'alice', side: 'sell', price: 10000, quantity: 3 });
+    book.addOrder({ id: 2, userId: 'carol', side: 'sell', price: 10000, quantity: 4 });
+    book.addOrder({ id: 3, userId: 'dave', side: 'sell', price: 10100, quantity: 5 });
+    return book;
+  }
+
+  test('lists the fills a crossing order would get, without an id', () => {
+    const preview = bookWithAsks().previewOrder({ userId: 'bob', side: 'buy', price: 10100, quantity: 9 });
+    expect(preview).toEqual({
+      fills: [
+        { restingOrderId: 1, restingUserId: 'alice', price: 10000, quantity: 3 },
+        { restingOrderId: 2, restingUserId: 'carol', price: 10000, quantity: 4 },
+        { restingOrderId: 3, restingUserId: 'dave', price: 10100, quantity: 2 },
+      ],
+      cancelledQuantity: 0,
+      cancelReason: null,
+      wouldRest: false,
+      restingQuantity: 0,
+    });
+  });
+
+  test('does not change the book at all', () => {
+    const book = bookWithAsks();
+    const depthBefore = book.getDepth(10);
+    book.previewOrder({ userId: 'bob', side: 'buy', price: 10100, quantity: 9 });
+    book.previewOrder({ userId: 'bob', side: 'buy', type: 'market', quantity: 100 });
+    expect(book.getDepth(10)).toEqual(depthBefore);
+    expect(book.getOrder(1).remaining).toBe(3);
+    expect(book.getOrder(3).remaining).toBe(5);
+  });
+
+  test('a limit order that would partly fill reports what would rest', () => {
+    const preview = bookWithAsks().previewOrder({ userId: 'bob', side: 'buy', price: 10000, quantity: 10 });
+    expect(preview.fills.map((f) => f.quantity)).toEqual([3, 4]);
+    expect(preview).toMatchObject({ wouldRest: true, restingQuantity: 3, cancelledQuantity: 0, cancelReason: null });
+  });
+
+  test('a market order larger than the book reports no liquidity', () => {
+    const preview = bookWithAsks().previewOrder({ userId: 'bob', side: 'buy', type: 'market', quantity: 20 });
+    expect(preview.fills.map((f) => f.quantity)).toEqual([3, 4, 5]);
+    expect(preview).toMatchObject({ wouldRest: false, cancelledQuantity: 8, cancelReason: 'no liquidity' });
+  });
+
+  test('a market order on an empty side has no fills', () => {
+    const preview = new OrderBook().previewOrder({ userId: 'bob', side: 'sell', type: 'market', quantity: 5 });
+    expect(preview).toMatchObject({ fills: [], cancelledQuantity: 5, cancelReason: 'no liquidity' });
+  });
+
+  test('stops at the same user\'s order (self-trade)', () => {
+    const preview = bookWithAsks().previewOrder({ userId: 'carol', side: 'buy', price: 10100, quantity: 9 });
+    expect(preview.fills).toEqual([{ restingOrderId: 1, restingUserId: 'alice', price: 10000, quantity: 3 }]);
+    expect(preview).toMatchObject({ wouldRest: false, cancelledQuantity: 6, cancelReason: 'self-trade' });
+  });
+
+  test('validates the order like addOrder does', () => {
+    const book = new OrderBook();
+    expect(() => book.previewOrder({ userId: 'bob', side: 'buy', price: 100.5, quantity: 1 })).toThrow(
+      ValidationError
+    );
+    expect(() => book.previewOrder({ side: 'buy', price: 100, quantity: 1 })).toThrow('User id is required');
+  });
+
+  test('the preview equals what addOrder then does', () => {
+    const book = bookWithAsks();
+    const order = { userId: 'bob', side: 'buy', price: 10100, quantity: 9 };
+    const preview = book.previewOrder(order);
+    const result = book.addOrder({ id: 99, ...order });
+    expect(result.trades.map((t) => [t.sellOrderId, t.sellUserId, t.price, t.quantity])).toEqual(
+      preview.fills.map((f) => [f.restingOrderId, f.restingUserId, f.price, f.quantity])
+    );
+  });
+});
+
+describe('OrderBook: preview always equals addOrder (random)', () => {
+  const { createRandom } = require('../test/random');
+
+  // Turn addOrder's result into the same shape as a preview.
+  function asPreview(side, result) {
+    return {
+      fills: result.trades.map((t) => ({
+        restingOrderId: side === 'buy' ? t.sellOrderId : t.buyOrderId,
+        restingUserId: side === 'buy' ? t.sellUserId : t.buyUserId,
+        price: t.price,
+        quantity: t.quantity,
+      })),
+      cancelledQuantity: result.cancelledQuantity,
+      cancelReason: result.cancelReason,
+      wouldRest: result.restingOrder !== null,
+      restingQuantity: result.restingOrder === null ? 0 : result.restingOrder.remaining,
+    };
+  }
+
+  test.each([1, 2, 3, 42, 2026])('seed %i: 2000 random orders and cancels', (seed) => {
+    const random = createRandom(seed);
+    const book = new OrderBook();
+    let nextId = 1;
+
+    for (let step = 0; step < 2000; step++) {
+      if (random.next() < 0.15 && nextId > 1) {
+        book.cancelOrder(random.int(1, nextId - 1)); // may already be gone; that's fine
+        continue;
+      }
+      const side = random.pick(['buy', 'sell']);
+      const order = { userId: random.pick(['u1', 'u2', 'u3', 'u4']), side: side, quantity: random.int(1, 20) };
+      if (random.next() < 0.2) {
+        order.type = 'market';
+      } else {
+        order.price = random.int(9900, 10100); // a narrow band, so orders cross often
+      }
+
+      const preview = book.previewOrder(order);
+      const result = book.addOrder({ id: nextId, ...order });
+      nextId += 1;
+      expect(asPreview(side, result)).toEqual(preview);
+    }
+  });
+});

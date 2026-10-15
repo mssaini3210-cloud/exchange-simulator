@@ -152,3 +152,21 @@ describe('MatchingEngine: lookups', () => {
     expect(() => engine.getOrder('WIPRO', 1)).toThrow(ValidationError);
   });
 });
+
+describe('MatchingEngine: previewOrder', () => {
+  test('previews in the right book and changes nothing', () => {
+    const engine = new MatchingEngine(['INFY', 'TCS']);
+    engine.addOrder({ symbol: 'INFY', id: 1, userId: 'alice', side: 'sell', price: 10000, quantity: 5 });
+    const preview = engine.previewOrder({ symbol: 'INFY', userId: 'bob', side: 'buy', price: 10000, quantity: 2 });
+    expect(preview.fills).toEqual([{ restingOrderId: 1, restingUserId: 'alice', price: 10000, quantity: 2 }]);
+    expect(engine.getOrder('INFY', 1).remaining).toBe(5);
+    expect(engine.previewOrder({ symbol: 'TCS', userId: 'bob', side: 'buy', price: 10000, quantity: 2 }).fills).toEqual([]);
+  });
+
+  test('rejects an unknown symbol', () => {
+    const engine = new MatchingEngine(['INFY']);
+    expect(() => engine.previewOrder({ symbol: 'WIPRO', userId: 'bob', side: 'buy', price: 1, quantity: 1 })).toThrow(
+      ValidationError
+    );
+  });
+});

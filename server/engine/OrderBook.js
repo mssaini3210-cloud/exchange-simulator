@@ -44,27 +44,44 @@ class OrderBook {
     this.nextSeq += 1;
 
     const { trades, stoppedBySelfTrade } = this.match(order);
-    if (order.remaining === 0) {
-      return { trades: trades, restingOrder: null, cancelledQuantity: 0, cancelReason: null };
+    const outcome = decideRemainder(order.type, order.remaining, stoppedBySelfTrade);
+    if (outcome.rests) {
+      this.restOrder(order);
+      return { trades: trades, restingOrder: { ...order }, cancelledQuantity: 0, cancelReason: null };
     }
-    if (stoppedBySelfTrade) {
-      return {
-        trades: trades,
-        restingOrder: null,
-        cancelledQuantity: order.remaining,
-        cancelReason: 'self-trade',
-      };
-    }
-    if (order.type === 'market') {
-      return {
-        trades: trades,
-        restingOrder: null,
-        cancelledQuantity: order.remaining,
-        cancelReason: 'no liquidity',
-      };
-    }
-    this.restOrder(order);
-    return { trades: trades, restingOrder: { ...order }, cancelledQuantity: 0, cancelReason: null };
+    return {
+      trades: trades,
+      restingOrder: null,
+      cancelledQuantity: outcome.cancelledQuantity,
+      cancelReason: outcome.cancelReason,
+    };
+  }
+
+  // Works out what addOrder would do with this order, WITHOUT changing
+  // the book. No id is needed. Returns:
+  //   fills: [{ restingOrderId, restingUserId, price, quantity }], in order
+  //   cancelledQuantity, cancelReason: as addOrder would report them
+  //   wouldRest, restingQuantity: whether (and how much) would rest
+  // The API uses this to check balances and save everything to the
+  // database before the book is touched.
+  previewOrder({ userId, side, type = 'limit', price, quantity }) {
+    validateOrderFields(userId, side, type, price, quantity);
+    const incoming = {
+      userId: userId,
+      side: side,
+      type: type,
+      price: type === 'market' ? null : price,
+      remaining: quantity,
+    };
+    const plan = this.planFills(incoming);
+    const outcome = decideRemainder(type, plan.remaining, plan.stoppedBySelfTrade);
+    return {
+      fills: plan.fills,
+      cancelledQuantity: outcome.cancelledQuantity,
+      cancelReason: outcome.cancelReason,
+      wouldRest: outcome.rests,
+      restingQuantity: outcome.rests ? plan.remaining : 0,
+    };
   }
 
   cancelOrder(id) {
@@ -109,64 +126,92 @@ class OrderBook {
     };
   }
 
-  // Fill an incoming order against the opposite side, best price first,
-  // oldest order first within a price. Trades happen at the resting
-  // order's price. Changes incoming.remaining and returns the trades,
-  // plus whether matching stopped because of a self-trade.
-  match(incoming) {
-    const isBuy = incoming.side === 'buy';
-    const opposite = isBuy ? this.asks : this.bids;
-    const trades = [];
+  // Read-only: the fills an incoming order would get, best price first,
+  // oldest order first within a price. Stops when the order is filled,
+  // the next price doesn't cross, or it reaches the same user's order
+  // (self-trade prevention). Changes nothing.
+  //
+  // Both previewOrder and match use this, so a preview and the real
+  // matching can never disagree.
+  planFills(incoming) {
+    const opposite = incoming.side === 'buy' ? this.asks : this.bids;
+    const fills = [];
+    let remaining = incoming.remaining;
     let stoppedBySelfTrade = false;
 
-    while (incoming.remaining > 0 && opposite.prices.length > 0 && !stoppedBySelfTrade) {
-      const price = bestPrice(opposite);
-      let crosses;
-      if (incoming.type === 'market') {
-        crosses = true; // a market order accepts any price
-      } else if (isBuy) {
-        crosses = price <= incoming.price;
-      } else {
-        crosses = price >= incoming.price;
-      }
-      if (!crosses) {
+    // The best price is at the end of the array, so walk it backwards.
+    for (let i = opposite.prices.length - 1; i >= 0; i--) {
+      if (remaining === 0 || stoppedBySelfTrade) {
         break;
       }
-
-      const level = opposite.levels.get(price);
-      while (incoming.remaining > 0 && !level.isEmpty()) {
-        const resting = level.peek();
+      const price = opposite.prices[i];
+      if (!crosses(incoming, price)) {
+        break; // every price after this one is worse
+      }
+      let node = opposite.levels.get(price).head; // oldest order first
+      while (node !== null && remaining > 0) {
+        const resting = node.order;
         if (resting.userId === incoming.userId) {
           stoppedBySelfTrade = true; // never trade a user with themselves
           break;
         }
-        const quantity = Math.min(incoming.remaining, resting.remaining);
-
-        resting.remaining -= quantity;
-        incoming.remaining -= quantity;
-        level.reduceQuantity(quantity);
-
-        trades.push({
-          buyOrderId: isBuy ? incoming.id : resting.id,
-          sellOrderId: isBuy ? resting.id : incoming.id,
-          buyUserId: isBuy ? incoming.userId : resting.userId,
-          sellUserId: isBuy ? resting.userId : incoming.userId,
+        const quantity = Math.min(remaining, resting.remaining);
+        fills.push({
+          restingOrderId: resting.id,
+          restingUserId: resting.userId,
           price: price,
           quantity: quantity,
         });
-
-        if (resting.remaining === 0) {
-          level.shift();
-          this.orderIndex.delete(resting.id);
-        }
-      }
-
-      if (level.isEmpty()) {
-        removePrice(opposite, price);
+        remaining -= quantity;
+        node = node.next;
       }
     }
 
-    return { trades: trades, stoppedBySelfTrade: stoppedBySelfTrade };
+    return { fills: fills, remaining: remaining, stoppedBySelfTrade: stoppedBySelfTrade };
+  }
+
+  // Fill an incoming order: plan the fills, then apply them to the book.
+  // Trades happen at the resting order's price. Changes incoming.remaining
+  // and returns the trades, plus whether matching stopped because of a
+  // self-trade.
+  match(incoming) {
+    const isBuy = incoming.side === 'buy';
+    const opposite = isBuy ? this.asks : this.bids;
+    const plan = this.planFills(incoming);
+    const trades = [];
+
+    for (const fill of plan.fills) {
+      const level = opposite.levels.get(fill.price);
+      // Every fill except the last empties its resting order, so the
+      // next fill's order is always at the front of its level.
+      const resting = level.peek();
+      if (resting.id !== fill.restingOrderId) {
+        throw new Error('Engine bug: planned fill does not match the book');
+      }
+
+      resting.remaining -= fill.quantity;
+      incoming.remaining -= fill.quantity;
+      level.reduceQuantity(fill.quantity);
+
+      trades.push({
+        buyOrderId: isBuy ? incoming.id : resting.id,
+        sellOrderId: isBuy ? resting.id : incoming.id,
+        buyUserId: isBuy ? incoming.userId : resting.userId,
+        sellUserId: isBuy ? resting.userId : incoming.userId,
+        price: fill.price,
+        quantity: fill.quantity,
+      });
+
+      if (resting.remaining === 0) {
+        level.shift();
+        this.orderIndex.delete(resting.id);
+      }
+      if (level.isEmpty()) {
+        removePrice(opposite, fill.price);
+      }
+    }
+
+    return { trades: trades, stoppedBySelfTrade: plan.stoppedBySelfTrade };
   }
 
   // Put an order into the book on its own side.
@@ -190,10 +235,42 @@ class OrderBook {
   }
 }
 
+// Does the incoming order accept this resting price?
+function crosses(incoming, price) {
+  if (incoming.type === 'market') {
+    return true; // a market order accepts any price
+  }
+  if (incoming.side === 'buy') {
+    return price <= incoming.price;
+  }
+  return price >= incoming.price;
+}
+
+// What happens to whatever is left after matching. One rule, used by
+// both addOrder and previewOrder.
+function decideRemainder(type, remaining, stoppedBySelfTrade) {
+  if (remaining === 0) {
+    return { rests: false, cancelledQuantity: 0, cancelReason: null };
+  }
+  if (stoppedBySelfTrade) {
+    return { rests: false, cancelledQuantity: remaining, cancelReason: 'self-trade' };
+  }
+  if (type === 'market') {
+    return { rests: false, cancelledQuantity: remaining, cancelReason: 'no liquidity' };
+  }
+  return { rests: true, cancelledQuantity: 0, cancelReason: null };
+}
+
 function validateOrder(id, userId, side, type, price, quantity) {
   if (id === undefined || id === null) {
     throw new ValidationError('Order id is required');
   }
+  validateOrderFields(userId, side, type, price, quantity);
+}
+
+// Everything except the id, so previewOrder can check an order that
+// doesn't have an id yet.
+function validateOrderFields(userId, side, type, price, quantity) {
   if (userId === undefined || userId === null) {
     throw new ValidationError('User id is required');
   }

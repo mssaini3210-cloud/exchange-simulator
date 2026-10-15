@@ -26,6 +26,12 @@ class MatchingEngine {
     return book.addOrder(order);
   }
 
+  // What addOrder would do, without changing the book (see OrderBook).
+  previewOrder(order) {
+    const book = this.getBook(order.symbol);
+    return book.previewOrder(order);
+  }
+
   // Order ids are only unique within one book, so cancel needs the symbol.
   cancelOrder(symbol, id) {
     const book = this.getBook(symbol);
