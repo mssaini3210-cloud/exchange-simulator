@@ -1,16 +1,17 @@
 const express = require('express');
 const requireAuth = require('../auth/requireAuth');
-const formatIST = require('../formatIST');
+const placeOrder = require('../trading/placeOrder');
 const rejectUnknownSymbol = require('./rejectUnknownSymbol');
 
 // Placing and cancelling orders. Every route here needs a token.
-function createOrdersRouter(engine, tradeLog) {
+// trading is { engine, queue, halted } (see app.js).
+function createOrdersRouter(pool, trading) {
   const router = express.Router();
-  let nextOrderId = 1; // one counter for all symbols (moves to the database on Day 5)
+  const engine = trading.engine;
 
   router.use(requireAuth);
 
-  router.post('/', (req, res) => {
+  router.post('/', async (req, res) => {
     const body = req.body || {};
     const symbol = body.symbol;
     if (symbol === undefined) {
@@ -21,31 +22,19 @@ function createOrdersRouter(engine, tradeLog) {
       return;
     }
 
-    const orderId = nextOrderId;
-    nextOrderId += 1;
-
     // Pick the fields one by one: id and userId never come from the body.
-    const result = engine.addOrder({
-      symbol: symbol,
-      id: orderId,
+    const request = {
       userId: req.userId,
+      symbol: symbol,
       side: body.side,
       type: body.type,
       price: body.price,
       quantity: body.quantity,
-    });
-
-    const trades = toPublicTrades(symbol, result.trades, new Date());
-    tradeLog.add(symbol, trades);
-
-    res.status(201).json({
-      orderId: orderId,
-      symbol: symbol,
-      trades: trades,
-      restingOrder: result.restingOrder,
-      cancelledQuantity: result.cancelledQuantity,
-      cancelReason: result.cancelReason,
-    });
+    };
+    // One order at a time, so balances can't be read and written by two
+    // orders at once.
+    const result = await trading.queue.run(() => placeOrder(pool, trading, request));
+    res.status(201).json(result);
   });
 
   router.delete('/:symbol/:id', (req, res) => {
@@ -75,18 +64,6 @@ function createOrdersRouter(engine, tradeLog) {
   });
 
   return router;
-}
-
-// Only what anyone may see about a trade. User ids and order ids are left
-// out, so nobody can find out who traded with whom.
-function toPublicTrades(symbol, engineTrades, time) {
-  return engineTrades.map((trade) => ({
-    symbol: symbol,
-    price: trade.price,
-    quantity: trade.quantity,
-    timestamp: time.toISOString(), // UTC, for machines
-    timeIST: formatIST(time), // Indian time, for people
-  }));
 }
 
 module.exports = createOrdersRouter;

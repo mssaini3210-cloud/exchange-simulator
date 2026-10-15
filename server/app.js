@@ -1,28 +1,35 @@
 const express = require('express');
 const MatchingEngine = require('./engine/MatchingEngine');
 const ValidationError = require('./engine/ValidationError');
-const TradeLog = require('./tradeLog');
+const SerialQueue = require('./trading/SerialQueue');
+const TradingHaltedError = require('./trading/TradingHaltedError');
 const { SYMBOLS } = require('./config');
 const createAuthRouter = require('./routes/auth');
 const createMarketDataRouter = require('./routes/marketData');
 const createOrdersRouter = require('./routes/orders');
 const createMeRouter = require('./routes/me');
 
-const MAX_TRADES_PER_SYMBOL = 100;
-
 // Builds a new app with its own engine and in-memory state.
 // Tests call this once per test so they never share state.
-// pool is the PostgreSQL pool for users, balances and holdings.
+// pool is the PostgreSQL pool: the database is the record of truth for
+// users, money, orders and trades.
 function createApp(pool) {
-  const engine = new MatchingEngine(SYMBOLS);
-  const tradeLog = new TradeLog(SYMBOLS, MAX_TRADES_PER_SYMBOL);
+  // Everything order placement and cancelling share:
+  //   engine: the in-memory order books
+  //   queue: runs one order job at a time
+  //   halted: set to true if the engine and database ever disagree
+  const trading = {
+    engine: new MatchingEngine(SYMBOLS),
+    queue: new SerialQueue(),
+    halted: false,
+  };
   const app = express();
 
   app.use(express.json());
 
   app.use('/auth', createAuthRouter(pool)); // public
-  app.use(createMarketDataRouter(engine, tradeLog)); // public
-  app.use('/orders', createOrdersRouter(engine, tradeLog)); // needs a token
+  app.use(createMarketDataRouter(pool, trading.engine)); // public
+  app.use('/orders', createOrdersRouter(pool, trading)); // needs a token
   app.use('/me', createMeRouter(pool)); // needs a token
 
   // No route matched.
@@ -41,6 +48,10 @@ function createApp(pool) {
 function handleError(err, req, res, next) {
   if (err instanceof ValidationError) {
     res.status(400).json({ error: err.message });
+    return;
+  }
+  if (err instanceof TradingHaltedError) {
+    res.status(503).json({ error: err.message });
     return;
   }
   if (err.type === 'entity.parse.failed') {

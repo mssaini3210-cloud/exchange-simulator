@@ -215,7 +215,7 @@ describe('unexpected errors', () => {
 
   test('a non-validation error is a 500 with a generic message, and is logged', async () => {
     const bug = new Error('secret internal detail');
-    jest.spyOn(MatchingEngine.prototype, 'addOrder').mockImplementation(() => {
+    jest.spyOn(MatchingEngine.prototype, 'previewOrder').mockImplementation(() => {
       throw bug;
     });
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});

@@ -132,8 +132,11 @@ describe('GET /trades/:symbol', () => {
   test('keeps only the last 100 trades', async () => {
     const app = newApp();
     // 101 single-share trades, each at a different price so we can tell them apart.
+    // Each user starts with only 100 shares, so Alice and Carol take turns selling.
     for (let i = 1; i <= 101; i++) {
-      await postOrder(app, ALICE, { symbol: 'RELIANCE', side: 'sell', price: 100000 + i, quantity: 1 });
+      const seller = i % 2 === 0 ? ALICE : CAROL;
+      const sell = await postOrder(app, seller, { symbol: 'RELIANCE', side: 'sell', price: 100000 + i, quantity: 1 });
+      expect(sell.status).toBe(201);
       await postOrder(app, BOB, { symbol: 'RELIANCE', side: 'buy', type: 'market', quantity: 1 });
     }
     const res = await request(app).get('/trades/RELIANCE');
