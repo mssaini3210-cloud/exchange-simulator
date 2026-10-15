@@ -3,11 +3,31 @@ const jwt = require('jsonwebtoken');
 const createApp = require('../app');
 const MatchingEngine = require('../engine/MatchingEngine');
 const formatIST = require('../formatIST');
-const { authHeader } = require('./helpers');
+const { authHeader, createTestPool, resetDatabase, clearTables, createTestUser } = require('./helpers');
 
-// Orders aren't saved to the database until Day 5, so no pool is needed.
+const pool = createTestPool();
+
+const USERNAMES = ['alice', 'bob', 'carol', 'dave', 'erin'];
+
+beforeAll(async () => {
+  await resetDatabase(pool);
+});
+
+// Fresh tables and the same five users before every test, so ALICE is
+// always user 1, BOB user 2, and so on.
+beforeEach(async () => {
+  await clearTables(pool);
+  for (const username of USERNAMES) {
+    await createTestUser(pool, username);
+  }
+});
+
+afterAll(async () => {
+  await pool.end();
+});
+
 function newApp() {
-  return createApp(null);
+  return createApp(pool);
 }
 
 const ALICE = 1;

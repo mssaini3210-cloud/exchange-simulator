@@ -1,6 +1,7 @@
 const { createPool } = require('../db/pool');
 const { runMigrations } = require('../db/migrate');
 const { createToken } = require('../auth/tokens');
+const { createUser } = require('../db/users');
 
 // A pool for the test database. Refuses to run against the real database,
 // because resetDatabase drops every table.
@@ -35,4 +36,12 @@ function authHeader(userId) {
   return 'Bearer ' + createToken(userId);
 }
 
-module.exports = { createTestPool, resetDatabase, clearTables, authHeader };
+// Creates a user (with starting cash and shares) straight in the database,
+// skipping signup's slow bcrypt hashing. These users can't log in with a
+// password; tests use the returned token instead.
+async function createTestUser(pool, username) {
+  const user = await createUser(pool, username, 'test-user-has-no-password');
+  return { id: user.id, token: createToken(user.id) };
+}
+
+module.exports = { createTestPool, resetDatabase, clearTables, authHeader, createTestUser };

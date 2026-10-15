@@ -47,6 +47,7 @@ describe('migrations', () => {
       '003_create_holdings.sql',
       '004_create_orders.sql',
       '005_create_trades.sql',
+      '006_order_reservations.sql',
     ]);
     expect(await runMigrations(pool)).toEqual([]);
   });
@@ -169,5 +170,62 @@ describe('clearTables', () => {
     await insertUser('bob');
     await clearTables(pool);
     expect(await insertUser('carol')).toBe(1);
+  });
+});
+
+describe('orders table: reservations and status (migration 006)', () => {
+  // Insert an order with the given column values, on top of sensible defaults.
+  async function insertOrder(userId, values) {
+    const order = {
+      side: 'buy',
+      quantity: 10,
+      remaining: 10,
+      status: 'open',
+      cancel_reason: null,
+      reserved_cash: 0,
+      ...values,
+    };
+    return pool.query(
+      `INSERT INTO orders (user_id, symbol, side, type, price, quantity, remaining, status, cancel_reason, reserved_cash)
+       VALUES ($1, 'INFY', $2, 'limit', 100, $3, $4, $5, $6, $7)`,
+      [userId, order.side, order.quantity, order.remaining, order.status, order.cancel_reason, order.reserved_cash]
+    );
+  }
+
+  test('a buy order can hold reserved cash, a sell order cannot', async () => {
+    const id = await insertUser('alice');
+    await expect(insertOrder(id, { side: 'buy', reserved_cash: 1000 })).resolves.toBeDefined();
+    await expect(insertOrder(id, { side: 'sell', reserved_cash: 1000 })).rejects.toMatchObject({ code: '23514' });
+    await expect(insertOrder(id, { reserved_cash: -1 })).rejects.toMatchObject({ code: '23514' });
+  });
+
+  test("'filled' exactly when remaining is 0", async () => {
+    const id = await insertUser('alice');
+    await expect(insertOrder(id, { status: 'filled', remaining: 0 })).resolves.toBeDefined();
+    await expect(insertOrder(id, { status: 'filled', remaining: 3 })).rejects.toMatchObject({ code: '23514' });
+    await expect(insertOrder(id, { status: 'open', remaining: 0 })).rejects.toMatchObject({ code: '23514' });
+  });
+
+  test("'cancelled' exactly when there is a cancel reason", async () => {
+    const id = await insertUser('alice');
+    await expect(
+      insertOrder(id, { status: 'cancelled', cancel_reason: 'cancelled by user' })
+    ).resolves.toBeDefined();
+    await expect(insertOrder(id, { status: 'cancelled', cancel_reason: null })).rejects.toMatchObject({
+      code: '23514',
+    });
+    await expect(insertOrder(id, { status: 'open', cancel_reason: 'self-trade' })).rejects.toMatchObject({
+      code: '23514',
+    });
+  });
+
+  test('only the four known cancel reasons are allowed', async () => {
+    const id = await insertUser('alice');
+    for (const reason of ['cancelled by user', 'self-trade', 'no liquidity', 'server restart']) {
+      await expect(insertOrder(id, { status: 'cancelled', cancel_reason: reason })).resolves.toBeDefined();
+    }
+    await expect(insertOrder(id, { status: 'cancelled', cancel_reason: 'felt like it' })).rejects.toMatchObject({
+      code: '23514',
+    });
   });
 });
