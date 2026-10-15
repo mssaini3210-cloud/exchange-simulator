@@ -130,6 +130,114 @@ them and can end up paying a crazy price. In my engine, a market buy can pay
 - Some exchanges also offer "cancel both". Usually the user picks which rule
   they want.
 
-### Still to finish
+## Day 3
+
+### What I built
+
+An **HTTP API** around the matching engine, using Express. Other programs
+(later, my React frontend) send requests to it and get JSON back. Everything
+lives in memory: restart the server and the book is empty again. No database
+and no real login yet.
+
+- One engine with three stocks: INFY, TCS, RELIANCE.
+- The API gives out order ids (1, 2, 3...) itself.
+- Each trade gets the stock symbol, a UTC `timestamp` and a readable
+  `timeIST` (for example "15 Oct 2026, 10:40:12 am").
+- It keeps the last 100 trades per stock.
+- Prices are still whole paise: ₹1500.00 is sent as `150000`.
+
+### The endpoints
+
+| Request | What it does |
+|---|---|
+| `GET /symbols` | List the stocks |
+| `POST /orders` | Place an order. Body: `{ symbol, side, type, price, quantity }` |
+| `DELETE /orders/INFY/1` | Cancel my order 1 in INFY |
+| `GET /book/INFY` | Top 10 price levels on each side |
+| `GET /trades/INFY` | Last 100 trades, newest first |
+
+Example: Alice posts a sell for 5 INFY at `150000`. Bob posts a buy for 2 at
+`150000`. Bob's response has one trade (2 shares at ₹1500), and
+`GET /book/INFY` now shows 3 shares left on the ask side.
+
+### Why app.js and index.js are separate
+
+- **app.js** builds the app: the routes, the engine, the trade list. It
+  doesn't start a server.
+- **index.js** just starts it: `createApp().listen(3000)`.
+
+Tests use supertest to send fake requests straight to the app, with no real
+server or port needed. Each test calls `createApp()` to get a fresh app with
+an empty book, so one test can't mess up another.
+
+### What middleware is
+
+Code that runs on **every request before it reaches the route**, like a
+security guard at the door. Each one does its job, then calls `next()` to
+pass the request along, or sends a response itself to stop it there.
+
+My middleware, in order:
+
+1. `express.json()`: turns the JSON body into `req.body`.
+2. `requireUser`: no `x-user-id` header? Reply 401 and stop. Otherwise set
+   `req.userId` and call `next()`.
+3. The routes.
+4. The error handler: catches anything a route throws and picks the status
+   code.
+
+### What each status code means
+
+| Code | Meaning | Example in this project |
+|---|---|---|
+| **200** OK | It worked | `GET /book/INFY` returns the book |
+| **201** Created | It worked and made something new | `POST /orders` creates order 1 |
+| **400** Bad Request | Your input is wrong | Price `1500.5`: "Price must be a positive integer in paise" |
+| **401** Unauthorized | I don't know who you are | No `x-user-id` header |
+| **403** Forbidden | I know who you are, but you can't do this | Bob tries to cancel Alice's order |
+| **404** Not Found | That thing doesn't exist | `GET /book/WIPRO`, or cancelling an order that already filled |
+| **500** Server Error | My code broke | An unexpected bug: logged, and the user sees only "Internal server error" |
+
+Easy way to remember: **4xx = the caller's fault, 5xx = my fault.**
+401 vs 403: 401 = "who are you?", 403 = "I know you, and no".
+
+### Why ValidationError exists
+
+The engine used to throw a plain `Error` for everything. Then the API can't
+tell **"the user sent a bad price"** (their fault → 400) apart from **"my
+code has a bug"** (my fault → 500).
+
+Now the engine throws `ValidationError` for bad input. The error handler
+checks `err instanceof ValidationError`:
+
+- yes → 400 with the message, so the user can fix their request
+- no → 500 with a generic message, and the real error goes to the log
+
+That way bugs never leak internal details to users, and they're never
+hidden as "bad input" either.
+
+### Why timestamps are stored in UTC
+
+- UTC is the same everywhere, with no time zones and no daylight saving. A
+  server in Mumbai and one in London write the same value for the same
+  moment.
+- Sorting and comparing times is simple when they all use one zone.
+- Converting UTC to any local time is easy. Going the other way is
+  error-prone.
+
+So `timestamp` (UTC) is the real value, and `timeIST` is only for people to
+read. Rule: **store in UTC, show in local time.**
+
+### Why the x-user-id header is not secure yet
+
+The server just **believes** whatever the header says. Anyone can send
+`x-user-id: alice` and act as Alice: place orders in her name, or cancel
+her orders. Nothing proves who you really are.
+
+It's a placeholder so I can build "whose order is this?" now. Real auth
+(JWT) will fix it: the user logs in with a password, the server signs a
+token, and every request must carry that token. The server checks the
+signature, so a faked token is rejected.
+
+## Still to finish
 
 - Walkthrough parts 4, 5 and 6 with Claude Code.
